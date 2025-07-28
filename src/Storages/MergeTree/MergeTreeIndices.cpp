@@ -135,6 +135,9 @@ MergeTreeIndexFactory::MergeTreeIndexFactory()
     registerCreator("bloom_filter", bloomFilterIndexCreator);
     registerValidator("bloom_filter", bloomFilterIndexValidator);
 
+    registerCreator("surf_filter", bloomFilterIndexCreator);
+    registerValidator("surf_filter", bloomFilterIndexValidator);
+
     registerCreator("hypothesis", hypothesisIndexCreator);
 
     registerValidator("hypothesis", hypothesisIndexValidator);

@@ -4,6 +4,7 @@
 
 #include <Interpreters/BloomFilter.h>
 #include <Interpreters/GinFilter.h>
+#include <Interpreters/SurfFilter.h>
 
 
 namespace DB
@@ -35,6 +36,8 @@ struct ITokenExtractor
     /// Updates Bloom filter from exact-match string filter value
     virtual void stringToBloomFilter(const char * data, size_t length, BloomFilter & bloom_filter) const = 0;
 
+    virtual void stringToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const = 0;
+
     /// Updates Bloom filter from substring-match string filter value.
     /// An `ITokenExtractor` implementation may decide to skip certain
     /// tokens depending on whether the substring is a prefix or a suffix.
@@ -48,12 +51,29 @@ struct ITokenExtractor
         stringToBloomFilter(data, length, bloom_filter);
     }
 
+    virtual void substringToSurfFilter(
+        const char * data,
+        size_t length,
+        SurfFilter & surf_filter,
+        bool /*is_prefix*/,
+        bool /*is_suffix*/) const
+    {
+        stringToSurfFilter(data, length, surf_filter);
+    }
+
     virtual void stringPaddedToBloomFilter(const char * data, size_t length, BloomFilter & bloom_filter) const
     {
         stringToBloomFilter(data, length, bloom_filter);
     }
 
+    virtual void stringPaddedToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const
+    {
+        stringToSurfFilter(data, length, surf_filter);
+    }
+
     virtual void stringLikeToBloomFilter(const char * data, size_t length, BloomFilter & bloom_filter) const = 0;
+
+    virtual void stringLikeToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const = 0;
 
     /// Updates GIN filter from exact-match string filter value
     virtual void stringToGinFilter(const char * data, size_t length, GinFilter & gin_filter) const = 0;
@@ -113,6 +133,35 @@ class ITokenExtractorHelper : public ITokenExtractor
 
         while (cur < length && static_cast<const Derived *>(this)->nextInStringLike(data, length, &cur, token))
             bloom_filter.add(token.c_str(), token.size());
+    }
+
+    void stringToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const override
+    {
+        size_t cur = 0;
+        size_t token_start = 0;
+        size_t token_len = 0;
+
+        while (cur < length && static_cast<const Derived *>(this)->nextInString(data, length, &cur, &token_start, &token_len))
+            surf_filter.addTerm(data + token_start, token_len);
+    }
+
+    void stringPaddedToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const override
+    {
+        size_t cur = 0;
+        size_t token_start = 0;
+        size_t token_len = 0;
+
+        while (cur < length && static_cast<const Derived *>(this)->nextInStringPadded(data, length, &cur, &token_start, &token_len))
+            surf_filter.addTerm(data + token_start, token_len);
+    }
+
+    void stringLikeToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const override
+    {
+        size_t cur = 0;
+        String token;
+
+        while (cur < length && static_cast<const Derived *>(this)->nextInStringLike(data, length, &cur, token))
+            surf_filter.addTerm(token.data(), token.size());
     }
 
     void stringToGinFilter(const char * data, size_t length, GinFilter & gin_filter) const override
@@ -178,7 +227,7 @@ struct DefaultTokenExtractor final : public ITokenExtractorHelper<DefaultTokenEx
     bool nextInStringLike(const char * data, size_t length, size_t * __restrict pos, String & token) const override;
     void substringToBloomFilter(const char * data, size_t length, BloomFilter & bloom_filter, bool is_prefix, bool is_suffix) const override;
     void substringToGinFilter(const char * data, size_t length, GinFilter & gin_filter, bool is_prefix, bool is_suffix) const override;
-
+    void substringToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter, bool is_prefix, bool is_suffix) const override;
     bool supportsStringLike() const override { return true; }
 };
 
