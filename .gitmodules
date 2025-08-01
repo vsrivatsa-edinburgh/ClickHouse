@@ -375,3 +375,6 @@
 [submodule "contrib/chdig"]
 	path = contrib/chdig
 	url = https://github.com/azat/chdig.git
+[submodule "contrib/SuRF"]
+	path = contrib/SuRF
+	url = https://github.com/vsrivatsa-edinburgh/SuRF.git
