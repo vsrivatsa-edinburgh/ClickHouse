@@ -14,6 +14,13 @@ else()
     set(MAX_COMPILER_MEMORY 1500)
 endif()
 set(MAX_LINKER_MEMORY 3500)
+
+# Allow overriding parallel link jobs to better utilize CPU cores
+# Default to 4 if not specified, which is reasonable for most systems
+set(PARALLEL_LINK_JOBS 4 CACHE INTERNAL "Maximum number of concurrent link jobs")
+set(PARALLEL_COMPILE_JOBS 4 CACHE INTERNAL "Maximum number of concurrent compile jobs")
+
+
 include(../cmake/limit_jobs.cmake)
 
 include (../cmake/version.cmake)
@@ -593,6 +600,10 @@ if (TARGET ch_contrib::liburing)
 endif()
 
 target_link_libraries (clickhouse_common_io PUBLIC ch_contrib::fast_float)
+
+if (TARGET ch_contrib::SuRF)
+    target_link_libraries (clickhouse_common_io PUBLIC ch_contrib::SuRF)
+endif()
 
 if (USE_ORC)
     dbms_target_link_libraries(PUBLIC ${ORC_LIBRARIES})

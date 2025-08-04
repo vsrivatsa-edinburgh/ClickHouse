@@ -142,7 +142,7 @@ class ITokenExtractorHelper : public ITokenExtractor
         size_t token_len = 0;
 
         while (cur < length && static_cast<const Derived *>(this)->nextInString(data, length, &cur, &token_start, &token_len))
-            surf_filter.addTerm(data + token_start, token_len);
+            surf_filter.add(data + token_start, token_len);
     }
 
     void stringPaddedToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const override
@@ -152,7 +152,7 @@ class ITokenExtractorHelper : public ITokenExtractor
         size_t token_len = 0;
 
         while (cur < length && static_cast<const Derived *>(this)->nextInStringPadded(data, length, &cur, &token_start, &token_len))
-            surf_filter.addTerm(data + token_start, token_len);
+            surf_filter.add(data + token_start, token_len);
     }
 
     void stringLikeToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const override
@@ -161,7 +161,7 @@ class ITokenExtractorHelper : public ITokenExtractor
         String token;
 
         while (cur < length && static_cast<const Derived *>(this)->nextInStringLike(data, length, &cur, token))
-            surf_filter.addTerm(token.data(), token.size());
+            surf_filter.add(token.data(), token.size());
     }
 
     void stringToGinFilter(const char * data, size_t length, GinFilter & gin_filter) const override
