@@ -6,6 +6,7 @@
         <!-- Default settings. -->
         <default>
             <!-- <async_insert>1</async_insert> -->
+            <log_queries>1</log_queries>
         </default>
 
         <!-- Profile that allows only read queries. -->
