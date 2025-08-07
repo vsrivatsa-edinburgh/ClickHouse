@@ -1,8 +1,8 @@
 #pragma once
 #include "config.h"
 
-#include <Storages/IndicesDescription.h>
 #include <Interpreters/ActionsDAG.h>
+#include <Storages/IndicesDescription.h>
 
 #include <memory>
 #include <string>
@@ -82,15 +82,15 @@ using StorageMetadataPtr = std::shared_ptr<const StorageInMemoryMetadata>;
 
 namespace ErrorCodes
 {
-    extern const int LOGICAL_ERROR;
-    extern const int NOT_IMPLEMENTED;
+extern const int LOGICAL_ERROR;
+extern const int NOT_IMPLEMENTED;
 }
 
 using MergeTreeIndexVersion = uint8_t;
 struct MergeTreeIndexFormat
 {
     MergeTreeIndexVersion version;
-    const char* extension;
+    const char * extension;
 
     explicit operator bool() const { return version != 0; }
 };
@@ -190,7 +190,8 @@ public:
     /// The returned row numbers are guaranteed to be sorted and unique.
     virtual std::vector<UInt64> calculateApproximateNearestNeighbors(MergeTreeIndexGranulePtr /*granule*/) const
     {
-        throw Exception(ErrorCodes::LOGICAL_ERROR, "calculateApproximateNearestNeighbors is not implemented for non-vector-similarity indexes");
+        throw Exception(
+            ErrorCodes::LOGICAL_ERROR, "calculateApproximateNearestNeighbors is not implemented for non-vector-similarity indexes");
     }
 
     template <typename RPNElement>
@@ -299,7 +300,7 @@ struct IMergeTreeIndex
     /// getDeserializedFormat() should be reimplemented too,
     /// and check all previous extensions too
     /// (to avoid breaking backward compatibility).
-    virtual const char* getSerializedFileExtension() const { return ".idx"; }
+    virtual const char * getSerializedFileExtension() const { return ".idx"; }
 
     /// Returns extension for deserialization.
     ///
@@ -310,10 +311,7 @@ struct IMergeTreeIndex
     virtual MergeTreeIndexGranulePtr createIndexGranule() const = 0;
 
     /// A more optimal filtering method
-    virtual bool supportsBulkFiltering() const
-    {
-        return false;
-    }
+    virtual bool supportsBulkFiltering() const { return false; }
 
     virtual MergeTreeIndexBulkGranulesPtr createIndexBulkGranules() const
     {
@@ -322,30 +320,30 @@ struct IMergeTreeIndex
 
     virtual MergeTreeIndexAggregatorPtr createIndexAggregator(const MergeTreeWriterSettings & settings) const = 0;
 
-    virtual MergeTreeIndexAggregatorPtr createIndexAggregatorForPart(const GinIndexStorePtr & /*store*/, const MergeTreeWriterSettings & settings) const
+    virtual MergeTreeIndexAggregatorPtr
+    createIndexAggregatorForPart(const GinIndexStorePtr & /*store*/, const MergeTreeWriterSettings & settings) const
     {
         return createIndexAggregator(settings);
     }
 
-    virtual MergeTreeIndexConditionPtr createIndexCondition(
-        const ActionsDAG::Node * predicate, ContextPtr context) const = 0;
+    virtual MergeTreeIndexConditionPtr createIndexCondition(const ActionsDAG::Node * predicate, ContextPtr context) const = 0;
 
     /// The vector similarity index overrides this method
     virtual MergeTreeIndexConditionPtr createIndexCondition(
-        const ActionsDAG::Node * /*predicate*/, ContextPtr /*context*/,
-        const std::optional<VectorSearchParameters> & /*parameters*/) const
+        const ActionsDAG::Node * /*predicate*/, ContextPtr /*context*/, const std::optional<VectorSearchParameters> & /*parameters*/) const
     {
-        throw Exception(ErrorCodes::NOT_IMPLEMENTED,
-            "createIndexCondition with vector search parameters is not implemented for index of type {}", index.type);
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED,
+            "createIndexCondition with vector search parameters is not implemented for index of type {}",
+            index.type);
     }
 
     virtual bool isVectorSimilarityIndex() const { return false; }
 
-    virtual MergeTreeIndexMergedConditionPtr createIndexMergedCondition(
-        const SelectQueryInfo & /*query_info*/, StorageMetadataPtr /*storage_metadata*/) const
+    virtual MergeTreeIndexMergedConditionPtr
+    createIndexMergedCondition(const SelectQueryInfo & /*query_info*/, StorageMetadataPtr /*storage_metadata*/) const
     {
-        throw Exception(ErrorCodes::NOT_IMPLEMENTED,
-            "MergedCondition is not implemented for index of type {}", index.type);
+        throw Exception(ErrorCodes::NOT_IMPLEMENTED, "MergedCondition is not implemented for index of type {}", index.type);
     }
 
     Names getColumnsRequiredForIndexCalc() const;
@@ -396,6 +394,12 @@ void bloomFilterIndexTextValidator(const IndexDescription & index, bool attach);
 
 MergeTreeIndexPtr bloomFilterIndexCreator(const IndexDescription & index);
 void bloomFilterIndexValidator(const IndexDescription & index, bool attach);
+
+MergeTreeIndexPtr surfFilterIndexTextCreator(const IndexDescription & index);
+void surfFilterIndexTextValidator(const IndexDescription & index, bool attach);
+
+MergeTreeIndexPtr surfFilterIndexCreator(const IndexDescription & index);
+void surfFilterIndexValidator(const IndexDescription & index, bool attach);
 
 MergeTreeIndexPtr hypothesisIndexCreator(const IndexDescription & index);
 void hypothesisIndexValidator(const IndexDescription & index, bool attach);

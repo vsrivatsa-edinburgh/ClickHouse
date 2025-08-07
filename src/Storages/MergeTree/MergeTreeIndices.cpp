@@ -13,8 +13,8 @@ namespace DB
 
 namespace ErrorCodes
 {
-    extern const int LOGICAL_ERROR;
-    extern const int INCORRECT_QUERY;
+extern const int LOGICAL_ERROR;
+extern const int INCORRECT_QUERY;
 }
 
 Names IMergeTreeIndex::getColumnsRequiredForIndexCalc() const
@@ -33,8 +33,7 @@ IMergeTreeIndex::getDeserializedFormat(const IDataPartStorage & data_part_storag
 void MergeTreeIndexFactory::registerCreator(const std::string & index_type, Creator creator)
 {
     if (!creators.emplace(index_type, std::move(creator)).second)
-        throw Exception(ErrorCodes::LOGICAL_ERROR, "MergeTreeIndexFactory: the Index creator name '{}' is not unique",
-                        index_type);
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "MergeTreeIndexFactory: the Index creator name '{}' is not unique", index_type);
 }
 void MergeTreeIndexFactory::registerValidator(const std::string & index_type, Validator validator)
 {
@@ -43,22 +42,25 @@ void MergeTreeIndexFactory::registerValidator(const std::string & index_type, Va
 }
 
 
-MergeTreeIndexPtr MergeTreeIndexFactory::get(
-    const IndexDescription & index) const
+MergeTreeIndexPtr MergeTreeIndexFactory::get(const IndexDescription & index) const
 {
     auto it = creators.find(index.type);
     if (it == creators.end())
     {
-        throw Exception(ErrorCodes::INCORRECT_QUERY,
-                "Unknown Index type '{}'. Available index types: {}", index.type,
-                std::accumulate(creators.cbegin(), creators.cend(), std::string{},
-                        [] (auto && left, const auto & right) -> std::string
-                        {
-                            if (left.empty())
-                                return right.first;
-                            return left + ", " + right.first;
-                        })
-                );
+        throw Exception(
+            ErrorCodes::INCORRECT_QUERY,
+            "Unknown Index type '{}'. Available index types: {}",
+            index.type,
+            std::accumulate(
+                creators.cbegin(),
+                creators.cend(),
+                std::string{},
+                [](auto && left, const auto & right) -> std::string
+                {
+                    if (left.empty())
+                        return right.first;
+                    return left + ", " + right.first;
+                }));
     }
 
     return it->second(index);
@@ -100,19 +102,20 @@ void MergeTreeIndexFactory::validate(const IndexDescription & index, bool attach
     auto it = validators.find(index.type);
     if (it == validators.end())
     {
-        throw Exception(ErrorCodes::INCORRECT_QUERY,
-            "Unknown Index type '{}'. Available index types: {}", index.type,
-                std::accumulate(
-                    validators.cbegin(),
-                    validators.cend(),
-                    std::string{},
-                    [](auto && left, const auto & right) -> std::string
-                    {
-                        if (left.empty())
-                            return right.first;
-                        return left + ", " + right.first;
-                    })
-            );
+        throw Exception(
+            ErrorCodes::INCORRECT_QUERY,
+            "Unknown Index type '{}'. Available index types: {}",
+            index.type,
+            std::accumulate(
+                validators.cbegin(),
+                validators.cend(),
+                std::string{},
+                [](auto && left, const auto & right) -> std::string
+                {
+                    if (left.empty())
+                        return right.first;
+                    return left + ", " + right.first;
+                }));
     }
 
     it->second(index, attach);
@@ -135,8 +138,8 @@ MergeTreeIndexFactory::MergeTreeIndexFactory()
     registerCreator("bloom_filter", bloomFilterIndexCreator);
     registerValidator("bloom_filter", bloomFilterIndexValidator);
 
-    registerCreator("surf_filter", bloomFilterIndexCreator);
-    registerValidator("surf_filter", bloomFilterIndexValidator);
+    registerCreator("surf_filter", surfFilterIndexCreator);
+    registerValidator("surf_filter", surfFilterIndexValidator);
 
     registerCreator("hypothesis", hypothesisIndexCreator);
 
