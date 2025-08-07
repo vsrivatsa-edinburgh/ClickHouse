@@ -6,7 +6,12 @@
 #include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeNullable.h>
 #include <DataTypes/DataTypeLowCardinality.h>
-#include <libdivide.h>
+#include <IO/VarInt.h>
+
+#include <surf.hpp>
+#include <string>
+#include <vector>
+#include <algorithm>
 
 
 namespace DB
@@ -16,126 +21,215 @@ namespace ErrorCodes
     extern const int BAD_ARGUMENTS;
 }
 
-static constexpr UInt64 SEED_GEN_A = 845897321;
-static constexpr UInt64 SEED_GEN_B = 217728422;
-
-static constexpr UInt64 MAX_SURF_FILTER_SIZE = 1 << 30;
-
-
-SurfFilterParameters::SurfFilterParameters(size_t filter_size_, size_t filter_hashes_, size_t seed_)
-    : filter_size(filter_size_), filter_hashes(filter_hashes_), seed(seed_)
+SurfFilterParameters::SurfFilterParameters(
+    bool include_dense_,
+    UInt32 sparse_dense_ratio_,
+    SurfSuffixType suffix_type_,
+    UInt32 hash_suffix_len_,
+    UInt32 real_suffix_len_)
+    : include_dense(include_dense_)
+    , sparse_dense_ratio(sparse_dense_ratio_)
+    , suffix_type(suffix_type_)
+    , hash_suffix_len(hash_suffix_len_)
+    , real_suffix_len(real_suffix_len_)
 {
-    if (filter_size == 0)
-        throw Exception(ErrorCodes::BAD_ARGUMENTS, "The size of surf filter cannot be zero");
-    if (filter_hashes == 0)
-        throw Exception(ErrorCodes::BAD_ARGUMENTS, "The number of hash functions for surf filter cannot be zero");
-    if (filter_size > MAX_SURF_FILTER_SIZE)
-        throw Exception(ErrorCodes::BAD_ARGUMENTS, "The size of surf filter cannot be more than {}", MAX_SURF_FILTER_SIZE);
+    if (sparse_dense_ratio == 0)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "The sparse dense ratio cannot be zero");
+    if (hash_suffix_len > 64)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Hash suffix length cannot be more than 64 bits");
+    if (real_suffix_len > 256)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Real suffix length cannot be more than 256 bytes");
 }
 
 
 SurfFilter::SurfFilter(const SurfFilterParameters & params)
-    : SurfFilter(params.filter_size, params.filter_hashes, params.seed)
+    : params_(params)
+    , surf_(nullptr)
+    , incremental_keys_()
+    , incremental_mode_(false)
+    , finalized_(false)
 {
+    // Initialize empty SuRF
 }
 
-SurfFilter::SurfFilter(size_t size_, size_t hashes_, size_t seed_)
-    : size(size_), hashes(hashes_), seed(seed_), words((size + sizeof(UnderType) - 1) / sizeof(UnderType)),
-      modulus(8 * size_), divider(modulus), filter(words, 0)
+SurfFilter::SurfFilter(const std::vector<std::string>& keys, const SurfFilterParameters & params)
+    : params_(params)
+    , surf_(nullptr)
+    , incremental_keys_()
+    , incremental_mode_(false)
+    , finalized_(false)
 {
-    chassert(size != 0);
-    chassert(hashes != 0);
+    buildFromKeys(keys);
 }
 
-void SurfFilter::resize(size_t size_)
+void SurfFilter::initializeForIncrementalInsertion(const SurfFilterParameters & params)
 {
-    size = size_;
-    words = ((size + sizeof(UnderType) - 1) / sizeof(UnderType));
-    modulus = 8 * size;
-    divider = libdivide::divider<size_t, libdivide::BRANCHFREE>(modulus);
-    filter.resize(words);
+    params_ = params;
+    surf_.reset(); // Reset any existing SuRF
+    incremental_keys_.clear();
+    incremental_mode_ = true;
+    finalized_ = false;
 }
 
-bool SurfFilter::find(const char * data, size_t len)
+bool SurfFilter::insert(const std::string& key)
 {
-    size_t hash1 = CityHash_v1_0_2::CityHash64WithSeed(data, len, seed);
-    size_t hash2 = CityHash_v1_0_2::CityHash64WithSeed(data, len, SEED_GEN_A * seed + SEED_GEN_B);
-
-    size_t acc = hash1;
-    for (size_t i = 0; i < hashes; ++i)
-    {
-        /// It accumulates in the loop as follows:
-        /// pos = (hash1 + hash2 * i + i * i) % (8 * size)
-        size_t pos = fastMod(acc + i * i);
-        if (!(filter[pos / word_bits] & (1ULL << (pos % word_bits))))
-            return false;
-        acc += hash2;
-    }
+    if (!incremental_mode_)
+        return false;
+    
+    // Check if the key maintains sorted order
+    if (!incremental_keys_.empty() && key < incremental_keys_.back())
+        return false; // Violates sort order
+    
+    incremental_keys_.push_back(key);
     return true;
 }
 
-void SurfFilter::add(const char * data, size_t len)
+void SurfFilter::finalize()
 {
-    size_t hash1 = CityHash_v1_0_2::CityHash64WithSeed(data, len, seed);
-    size_t hash2 = CityHash_v1_0_2::CityHash64WithSeed(data, len, SEED_GEN_A * seed + SEED_GEN_B);
-
-    size_t acc = hash1;
-    for (size_t i = 0; i < hashes; ++i)
-    {
-        /// It accumulates in the loop as follows:
-        /// pos = (hash1 + hash2 * i + i * i) % (8 * size)
-        size_t pos = fastMod(acc + i * i);
-        filter[pos / word_bits] |= (1ULL << (pos % word_bits));
-        acc += hash2;
-    }
+    if (!incremental_mode_ || incremental_keys_.empty())
+        return;
+        
+    // Build the final SuRF from accumulated keys
+    buildFromKeys(incremental_keys_);
+    incremental_keys_.clear();
+    incremental_mode_ = false;
+    finalized_ = true;
 }
+
+bool SurfFilter::lookupKey(const std::string& key) const
+{
+    if (!finalized_ || !surf_)
+        return false; // Not ready for lookups
+        
+    return surf_->lookupKey(key);
+}
+
+// Range capabilities commented out for now
+/*
+bool SurfFilter::lookupRange(const std::string& left_key, bool left_inclusive, 
+                            const std::string& right_key, bool right_inclusive) const
+{
+    // TODO: Implement range lookup when ready
+    return false;
+}
+
+UInt64 SurfFilter::approxCount(const std::string& left_key, const std::string& right_key) const
+{
+    // TODO: Implement approximate range counting when ready
+    return 0;
+}
+*/
 
 void SurfFilter::clear()
 {
-    filter.assign(words, 0);
+    surf_.reset();
+    incremental_keys_.clear();
+    incremental_mode_ = false;
+    finalized_ = false;
 }
 
-bool SurfFilter::contains(const SurfFilter & bf)
+bool SurfFilter::isEmpty() const
 {
-    for (size_t i = 0; i < words; ++i)
-    {
-        if ((filter[i] & bf.filter[i]) != bf.filter[i])
-            return false;
-    }
-    return true;
-}
-
-UInt64 SurfFilter::isEmpty() const
-{
-    for (size_t i = 0; i < words; ++i)
-        if (filter[i] != 0)
-            return false;
-    return true;
+    return !finalized_ && !incremental_mode_;
 }
 
 size_t SurfFilter::memoryUsageBytes() const
 {
-    return filter.capacity() * sizeof(UnderType);
+    if (surf_)
+        return surf_->getMemoryUsage();
+    return sizeof(SurfFilter) + incremental_keys_.size() * sizeof(std::string);
+}
+
+UInt32 SurfFilter::getHeight() const
+{
+    if (surf_)
+        return surf_->getHeight();
+    return 0;
+}
+
+void SurfFilter::serialize(WriteBuffer & ostr) const
+{
+    writeVarUInt(finalized_ ? 1 : 0, ostr);
+    if (finalized_ && surf_) {
+        auto serialized_size = surf_->serializedSize();
+        writeVarUInt(serialized_size, ostr);
+        
+        char* serialized_data = surf_->serialize();
+        ostr.write(serialized_data, serialized_size);
+        delete[] serialized_data;
+    } else {
+        writeVarUInt(0, ostr); // No data to serialize
+    }
+}
+
+void SurfFilter::deserialize(ReadBuffer & istr)
+{
+    UInt64 is_finalized;
+    readVarUInt(is_finalized, istr);
+    finalized_ = (is_finalized != 0);
+    
+    UInt64 serialized_size;
+    readVarUInt(serialized_size, istr);
+    
+    if (serialized_size > 0) {
+        std::vector<char> buffer(serialized_size);
+        bool read_success = istr.read(buffer.data(), serialized_size);
+        if (read_success) {
+            surf_.reset(surf::SuRF::deSerialize(buffer.data()));
+        }
+    }
+}
+
+void SurfFilter::destroy()
+{
+    if (surf_) {
+        surf_->destroy();
+        surf_.reset();
+    }
+    clear();
+}
+
+void SurfFilter::buildFromKeys(const std::vector<std::string>& keys)
+{
+    if (keys.empty()) {
+        finalized_ = false;
+        return;
+    }
+    
+    // Create SuRF with the specified parameters
+    surf_ = std::make_unique<surf::SuRF>(
+        keys,
+        params_.include_dense,
+        params_.sparse_dense_ratio,
+        static_cast<surf::SuffixType>(params_.suffix_type),
+        params_.hash_suffix_len,
+        params_.real_suffix_len
+    );
+    
+    finalized_ = true;
+    incremental_mode_ = false;
+}
+
+void SurfFilter::createFromBuilder()
+{
+    // This would be used if we had a builder-based approach
+    finalized_ = true;
+    incremental_mode_ = false;
 }
 
 bool operator== (const SurfFilter & a, const SurfFilter & b)
 {
-    for (size_t i = 0; i < a.words; ++i)
-        if (a.filter[i] != b.filter[i])
-            return false;
-    return true;
-}
-
-void SurfFilter::addHashWithSeed(const UInt64 & hash, const UInt64 & hash_seed)
-{
-    size_t pos = fastMod(CityHash_v1_0_2::Hash128to64(CityHash_v1_0_2::uint128(hash, hash_seed)));
-    filter[pos / word_bits] |= (1ULL << (pos % word_bits));
-}
-
-bool SurfFilter::findHashWithSeed(const UInt64 & hash, const UInt64 & hash_seed)
-{
-    size_t pos = fastMod(CityHash_v1_0_2::Hash128to64(CityHash_v1_0_2::uint128(hash, hash_seed)));
-    return bool(filter[pos / word_bits] & (1ULL << (pos % word_bits)));
+    // Compare basic state and parameters
+    if (a.finalized_ != b.finalized_ || 
+        a.incremental_mode_ != b.incremental_mode_ ||
+        a.params_.include_dense != b.params_.include_dense ||
+        a.params_.sparse_dense_ratio != b.params_.sparse_dense_ratio ||
+        a.params_.suffix_type != b.params_.suffix_type)
+        return false;
+    
+    // If both have SuRF instances, we can't easily compare them directly
+    // This is a limitation of the current implementation
+    return (a.surf_ == nullptr) == (b.surf_ == nullptr);
 }
 
 DataTypePtr SurfFilter::getPrimitiveType(const DataTypePtr & data_type)
@@ -168,6 +262,25 @@ ColumnPtr SurfFilter::getPrimitiveColumn(const ColumnPtr & column)
         return getPrimitiveColumn(low_cardinality_col->convertToFullColumnIfLowCardinality());
 
     return column;
+}
+
+void SurfFilter::add(const char* data, size_t len)
+{
+    if (data && len > 0) {
+        std::string token(data, len);
+        add(token);
+    }
+}
+
+void SurfFilter::add(const std::string& token)
+{
+    if (!incremental_mode_) {
+        // Initialize for incremental insertion if not already done
+        initializeForIncrementalInsertion(params_);
+    }
+    
+    // Add the token as a key
+    insert(token);
 }
 
 }

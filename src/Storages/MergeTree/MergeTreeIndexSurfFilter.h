@@ -1,10 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <Columns/IColumn_fwd.h>
-#include <Common/HashTable/HashSet.h>
 #include <Interpreters/SurfFilter.h>
 #include <Storages/MergeTree/KeyCondition.h>
 #include <Storages/MergeTree/MergeTreeIndices.h>
+#include <Common/HashTable/HashSet.h>
 
 namespace DB
 {
@@ -14,15 +15,17 @@ using ConstSetPtr = std::shared_ptr<const Set>;
 
 namespace ErrorCodes
 {
-    extern const int LOGICAL_ERROR;
+extern const int LOGICAL_ERROR;
 }
 
 class MergeTreeIndexGranuleSurfFilter final : public IMergeTreeIndexGranule
 {
 public:
-    MergeTreeIndexGranuleSurfFilter(size_t bits_per_row_, size_t hash_functions_, size_t index_columns_);
+    MergeTreeIndexGranuleSurfFilter(size_t index_columns_);
 
-    MergeTreeIndexGranuleSurfFilter(size_t bits_per_row_, size_t hash_functions_, const std::vector<HashSet<UInt64>> & column_hashes);
+    MergeTreeIndexGranuleSurfFilter(const std::vector<HashSet<UInt64>> & column_hashes);
+
+    MergeTreeIndexGranuleSurfFilter(const std::vector<std::set<std::string>> & column_keys);
 
     bool empty() const override;
 
@@ -34,13 +37,11 @@ public:
     const std::vector<SurfFilterPtr> & getFilters() const { return surf_filters; }
 
 private:
-    const size_t bits_per_row;
-    const size_t hash_functions;
-
     size_t total_rows = 0;
     std::vector<SurfFilterPtr> surf_filters;
 
     void fillingSurfFilter(SurfFilterPtr & bf, const HashSet<UInt64> & hashes) const;
+    void fillingSurfFilterWithKeys(SurfFilterPtr & bf, const std::set<std::string> & keys) const;
 };
 
 class MergeTreeIndexConditionSurfFilter final : public IMergeTreeIndexCondition, WithContext
@@ -68,13 +69,16 @@ public:
             ALWAYS_TRUE,
         };
 
-        RPNElement(Function function_ = FUNCTION_UNKNOWN) : function(function_) {} /// NOLINT
+        RPNElement(Function function_ = FUNCTION_UNKNOWN)
+            : function(function_)
+        {
+        } /// NOLINT
 
         Function function = FUNCTION_UNKNOWN;
         std::vector<std::pair<size_t, ColumnPtr>> predicate;
     };
 
-    MergeTreeIndexConditionSurfFilter(const ActionsDAG::Node * predicate, ContextPtr context_, const Block & header_, size_t hash_functions_);
+    MergeTreeIndexConditionSurfFilter(const ActionsDAG::Node * predicate, ContextPtr context_, const Block & header_);
 
     bool alwaysUnknownOrTrue() const override;
 
@@ -88,7 +92,6 @@ public:
 
 private:
     const Block & header;
-    const size_t hash_functions;
     std::vector<RPNElement> rpn;
 
     bool mayBeTrueOnGranule(const MergeTreeIndexGranuleSurfFilter * granule) const;
@@ -117,7 +120,7 @@ private:
 class MergeTreeIndexAggregatorSurfFilter final : public IMergeTreeIndexAggregator
 {
 public:
-    MergeTreeIndexAggregatorSurfFilter(size_t bits_per_row_, size_t hash_functions_, const Names & columns_name_);
+    MergeTreeIndexAggregatorSurfFilter(const Names & columns_name_);
 
     bool empty() const override;
 
@@ -126,10 +129,11 @@ public:
     void update(const Block & block, size_t * pos, size_t limit) override;
 
 private:
-    size_t bits_per_row;
-    size_t hash_functions;
     const Names index_columns_name;
 
+    // Store keys for SuRF construction instead of hashes
+    std::vector<std::set<std::string>> column_keys;
+    // Keep hashes for backward compatibility during transition
     std::vector<HashSet<UInt64>> column_hashes;
     size_t total_rows = 0;
 };
@@ -138,20 +142,13 @@ private:
 class MergeTreeIndexSurfFilter final : public IMergeTreeIndex
 {
 public:
-    MergeTreeIndexSurfFilter(
-        const IndexDescription & index_,
-        size_t bits_per_row_,
-        size_t hash_functions_);
+    MergeTreeIndexSurfFilter(const IndexDescription & index_);
 
     MergeTreeIndexGranulePtr createIndexGranule() const override;
 
     MergeTreeIndexAggregatorPtr createIndexAggregator(const MergeTreeWriterSettings & settings) const override;
 
     MergeTreeIndexConditionPtr createIndexCondition(const ActionsDAG::Node * predicate, ContextPtr context) const override;
-
-private:
-    size_t bits_per_row;
-    size_t hash_functions;
 };
 
 }

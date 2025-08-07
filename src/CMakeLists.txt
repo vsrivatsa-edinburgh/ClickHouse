@@ -601,10 +601,6 @@ endif()
 
 target_link_libraries (clickhouse_common_io PUBLIC ch_contrib::fast_float)
 
-if (TARGET ch_contrib::SuRF)
-    target_link_libraries (clickhouse_common_io PUBLIC ch_contrib::SuRF)
-endif()
-
 if (USE_ORC)
     dbms_target_link_libraries(PUBLIC ${ORC_LIBRARIES})
     dbms_target_include_directories(SYSTEM BEFORE PUBLIC ${ORC_INCLUDE_DIR} "${PROJECT_BINARY_DIR}/contrib/orc/c++/include")
@@ -699,6 +695,10 @@ endif()
 
 if (ENABLE_BUZZHOUSE)
     dbms_target_link_libraries(PRIVATE clickhouse_buzzhouse_proto)
+endif()
+
+if (TARGET ch_contrib::surf)
+    dbms_target_link_libraries (PUBLIC ch_contrib::surf)
 endif()
 
 if (ENABLE_TESTS)

@@ -131,7 +131,6 @@ add_contrib (aws-cmake
 add_contrib (aklomp-base64-cmake aklomp-base64)
 add_contrib (simdjson-cmake simdjson)
 add_contrib (rapidjson-cmake rapidjson)
-add_contrib (SuRF)
 add_contrib (fastops-cmake fastops)
 add_contrib (libuv-cmake libuv)
 add_contrib (liburing-cmake liburing)
@@ -252,6 +251,8 @@ add_contrib (sha3iuf-cmake SHA3IUF)
 add_contrib (bech32)
 
 add_contrib (sz3-cmake sz3)
+
+add_contrib (surf-cmake SuRF)
 
 # Put all targets defined here and in subdirectories under "contrib/<immediate-subdir>" folders in GUI-based IDEs.
 # Some of third-party projects may override CMAKE_FOLDER or FOLDER property of their targets, so they would not appear
