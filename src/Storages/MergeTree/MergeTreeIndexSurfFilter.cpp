@@ -1034,13 +1034,9 @@ MergeTreeIndexAggregatorSurfFilter::MergeTreeIndexAggregatorSurfFilter(const Nam
     , surf_filters(columns_name_.size())
     , accumulated_keys(columns_name_.size())
 {
-    // Initialize SuRF filters for incremental insertion
-    SurfFilterParameters params(true, 16, kNone, 0, 0);
-    for (size_t i = 0; i < columns_name_.size(); ++i)
-    {
-        surf_filters[i] = std::make_shared<SurfFilter>(params);
-        surf_filters[i]->initializeForIncrementalInsertion(params);
-    }
+    // We don't need to initialize SuRF filters here since we'll create them 
+    // directly from accumulated keys in getGranuleAndReset()
+    LOG_TRACE(surf_index_logger, "MergeTreeIndexAggregatorSurfFilter: initialized aggregator for {} columns", columns_name_.size());
 }
 
 bool MergeTreeIndexAggregatorSurfFilter::empty() const
@@ -1050,36 +1046,48 @@ bool MergeTreeIndexAggregatorSurfFilter::empty() const
 
 MergeTreeIndexGranulePtr MergeTreeIndexAggregatorSurfFilter::getGranuleAndReset()
 {
-    // Sort accumulated keys and insert them one by one, then finalize
+    LOG_TRACE(surf_index_logger, "getGranuleAndReset: creating granule for {} columns with total_rows={}", surf_filters.size(), total_rows);
+    
+    // Create new SuRF filters for the granule (separate from aggregator's working filters)
+    std::vector<SurfFilterPtr> granule_filters(surf_filters.size());
+    
+    // Sort accumulated keys and create finalized filters for the granule
     for (size_t i = 0; i < surf_filters.size(); ++i)
     {
+        if (accumulated_keys[i].empty())
+        {
+            LOG_TRACE(surf_index_logger, "getGranuleAndReset: column {} has no keys, creating empty filter", i);
+            // Create empty filter for this column
+            SurfFilterParameters params(true, 16, kNone, 0, 0);
+            granule_filters[i] = std::make_shared<SurfFilter>(params);
+            continue;
+        }
+            
         // Sort all accumulated keys for this column
         std::sort(accumulated_keys[i].begin(), accumulated_keys[i].end());
+        
+        LOG_TRACE(surf_index_logger, "getGranuleAndReset: creating finalized filter with {} sorted keys for column {}", accumulated_keys[i].size(), i);
 
-        // Insert keys one by one in sorted order
-        for (const auto & key : accumulated_keys[i])
-        {
-            surf_filters[i]->insert(key);
-        }
-
-        // Finalize the SuRF filter
-        surf_filters[i]->finalize();
+        // Create a new SuRF filter for the granule and build it with sorted keys
+        SurfFilterParameters params(true, 16, kNone, 0, 0);
+        granule_filters[i] = std::make_shared<SurfFilter>(accumulated_keys[i], params);
+        
+        LOG_TRACE(surf_index_logger, "getGranuleAndReset: successfully created finalized filter for column {}", i);
     }
 
     // Create granule with the finalized filters
     auto granule = std::make_shared<MergeTreeIndexGranuleSurfFilter>(index_columns_name.size());
-    granule->setFilters(surf_filters);
+    granule->setFilters(granule_filters);
     granule->setTotalRows(total_rows);
 
-    // Reset for next granule
+    // Reset aggregator state for next granule
     total_rows = 0;
-    SurfFilterParameters params(true, 16, kNone, 0, 0);
     for (size_t i = 0; i < surf_filters.size(); ++i)
     {
-        surf_filters[i] = std::make_shared<SurfFilter>(params);
-        surf_filters[i]->initializeForIncrementalInsertion(params);
         accumulated_keys[i].clear();
     }
+    
+    LOG_TRACE(surf_index_logger, "getGranuleAndReset: granule created and aggregator reset for next granule");
 
     return granule;
 }
