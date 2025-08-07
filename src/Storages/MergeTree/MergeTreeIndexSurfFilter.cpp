@@ -42,8 +42,6 @@ extern const int LOGICAL_ERROR;
 std::string extractKeyFromField(const Field & field, const DataTypePtr & data_type);
 std::vector<std::string> extractKeysFromColumn(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit);
 
-static LoggerPtr surf_index_logger = getLogger("MergeTreeIndexSurfFilter");
-
 // Convert false positive probability to SuRF parameters
 static SurfFilterParameters getSurfParameters(double false_positive_probability)
 {
@@ -86,8 +84,6 @@ MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(size_t index_co
 MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(const std::vector<HashSet<UInt64>> & column_hashes_)
     : surf_filters(column_hashes_.size())
 {
-    LOG_TRACE(surf_index_logger, "MergeTreeIndexGranuleSurfFilter constructor called with {} columns", column_hashes_.size());
-
     if (column_hashes_.empty())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Granule_index_blocks empty or total_rows is zero.");
 
@@ -464,7 +460,6 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
                 const ColumnPtr & key_column = query_index_hash.second;
 
                 // Use key-based lookup since we now store keys instead of hashes
-                LOG_TRACE(&Poco::Logger::get("SuRF"), "mayBeTrueOnGranule: checking key column against filter");
 
                 // Extract key from the key_column
                 const auto * string_column = typeid_cast<const ColumnConst *>(key_column.get());
@@ -474,20 +469,16 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
                     if (inner_string && inner_string->size() > 0)
                     {
                         std::string key = inner_string->getDataAt(0).toString();
-                        LOG_TRACE(&Poco::Logger::get("SuRF"), "mayBeTrueOnGranule: extracted key '{}' from predicate", key);
 
                         match_rows = keyMatchesFilter(filter, key);
-                        LOG_TRACE(&Poco::Logger::get("SuRF"), "mayBeTrueOnGranule: key '{}' match result: {}", key, match_rows);
                     }
                     else
                     {
-                        LOG_TRACE(&Poco::Logger::get("SuRF"), "mayBeTrueOnGranule: invalid string column, falling back to hash method");
                         match_rows = maybeTrueOnSurfFilter(&*key_column, filter, match_all);
                     }
                 }
                 else
                 {
-                    LOG_TRACE(&Poco::Logger::get("SuRF"), "mayBeTrueOnGranule: non-string column, falling back to hash method");
                     match_rows = maybeTrueOnSurfFilter(&*key_column, filter, match_all);
                 }
             }
@@ -1046,7 +1037,6 @@ MergeTreeIndexAggregatorSurfFilter::MergeTreeIndexAggregatorSurfFilter(const Nam
 {
     // We don't need to initialize SuRF filters here since we'll create them 
     // directly from accumulated keys in getGranuleAndReset()
-    LOG_TRACE(surf_index_logger, "MergeTreeIndexAggregatorSurfFilter: initialized aggregator for {} columns", columns_name_.size());
 }
 
 bool MergeTreeIndexAggregatorSurfFilter::empty() const
@@ -1056,8 +1046,6 @@ bool MergeTreeIndexAggregatorSurfFilter::empty() const
 
 MergeTreeIndexGranulePtr MergeTreeIndexAggregatorSurfFilter::getGranuleAndReset()
 {
-    LOG_TRACE(surf_index_logger, "getGranuleAndReset: creating granule for {} columns with total_rows={}", surf_filters.size(), total_rows);
-    
     // Create new SuRF filters for the granule (separate from aggregator's working filters)
     std::vector<SurfFilterPtr> granule_filters(surf_filters.size());
     
@@ -1066,7 +1054,6 @@ MergeTreeIndexGranulePtr MergeTreeIndexAggregatorSurfFilter::getGranuleAndReset(
     {
         if (accumulated_keys[i].empty())
         {
-            LOG_TRACE(surf_index_logger, "getGranuleAndReset: column {} has no keys, creating empty filter", i);
             // Create empty filter for this column
             SurfFilterParameters params = getSurfParameters(0.025); // Use default false positive probability
             granule_filters[i] = std::make_shared<SurfFilter>(params);
@@ -1076,13 +1063,10 @@ MergeTreeIndexGranulePtr MergeTreeIndexAggregatorSurfFilter::getGranuleAndReset(
         // Sort all accumulated keys for this column
         std::sort(accumulated_keys[i].begin(), accumulated_keys[i].end());
         
-        LOG_TRACE(surf_index_logger, "getGranuleAndReset: creating finalized filter with {} sorted keys for column {}", accumulated_keys[i].size(), i);
-
         // Create a new SuRF filter for the granule and build it with sorted keys
         SurfFilterParameters params = getSurfParameters(0.025); // Use default false positive probability
         granule_filters[i] = std::make_shared<SurfFilter>(accumulated_keys[i], params);
         
-        LOG_TRACE(surf_index_logger, "getGranuleAndReset: successfully created finalized filter for column {}", i);
     }
 
     // Create granule with the finalized filters
@@ -1097,8 +1081,6 @@ MergeTreeIndexGranulePtr MergeTreeIndexAggregatorSurfFilter::getGranuleAndReset(
         accumulated_keys[i].clear();
     }
     
-    LOG_TRACE(surf_index_logger, "getGranuleAndReset: granule created and aggregator reset for next granule");
-
     return granule;
 }
 
