@@ -144,13 +144,18 @@ private:
 class MergeTreeIndexSurfFilter final : public IMergeTreeIndex
 {
 public:
-    MergeTreeIndexSurfFilter(const IndexDescription & index_);
+    MergeTreeIndexSurfFilter(const IndexDescription & index_, double false_positive_probability_ = 0.025);
 
     MergeTreeIndexGranulePtr createIndexGranule() const override;
 
     MergeTreeIndexAggregatorPtr createIndexAggregator(const MergeTreeWriterSettings & settings) const override;
 
     MergeTreeIndexConditionPtr createIndexCondition(const ActionsDAG::Node * predicate, ContextPtr context) const override;
+
+    double getFalsePositiveProbability() const { return false_positive_probability; }
+
+private:
+    double false_positive_probability;
 };
 
 }
