@@ -18,6 +18,8 @@
 #include <Common/quoteString.h>
 
 #include <Poco/Logger.h>
+#include <iostream>
+#include <Common/logger_useful.h>
 
 
 namespace DB
@@ -27,8 +29,9 @@ namespace ErrorCodes
 {
 extern const int LOGICAL_ERROR;
 extern const int INCORRECT_QUERY;
-extern const int BAD_ARGUMENTS;
 }
+
+static LoggerPtr surf_text_logger = getLogger("MergeTreeIndexSurfFilterText");
 
 MergeTreeIndexGranuleSurfFilterText::MergeTreeIndexGranuleSurfFilterText(
     const String & index_name_, size_t columns_number, const SurfFilterParameters & params_)
@@ -187,12 +190,14 @@ bool MergeTreeConditionSurfFilterText::alwaysUnknownOrTrue() const
 /// Keep in-sync with MergeTreeIndexConditionGin::mayBeTrueOnTranuleInPart
 bool MergeTreeConditionSurfFilterText::mayBeTrueOnGranule(MergeTreeIndexGranulePtr idx_granule) const
 {
+    LOG_TRACE(surf_text_logger, "mayBeTrueOnGranule called");
+    
     std::shared_ptr<MergeTreeIndexGranuleSurfFilterText> granule
         = std::dynamic_pointer_cast<MergeTreeIndexGranuleSurfFilterText>(idx_granule);
     if (!granule)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "SurfFilter index condition got a granule with the wrong type.");
 
-    /// Check like in KeyCondition.
+    LOG_TRACE(surf_text_logger, "granule cast successful, processing RPN stack");
     std::vector<BoolMask> rpn_stack;
     for (const auto & element : rpn)
     {

@@ -18,7 +18,9 @@
 #include <Storages/MergeTree/MergeTreeData.h>
 #include <Storages/MergeTree/RPNBuilder.h>
 #include <base/unaligned.h>
+#include <iostream>
 #include <Common/FieldAccurateComparison.h>
+#include <Common/logger_useful.h>
 
 #include <algorithm>
 #include <string>
@@ -35,6 +37,8 @@ extern const int INCORRECT_QUERY;
 extern const int NUMBER_OF_ARGUMENTS_DOESNT_MATCH;
 extern const int LOGICAL_ERROR;
 }
+
+static LoggerPtr surf_index_logger = getLogger("MergeTreeIndexSurfFilter");
 
 MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(size_t index_columns_)
     : surf_filters(index_columns_)
@@ -56,6 +60,8 @@ MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(size_t index_co
 MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(const std::vector<HashSet<UInt64>> & column_hashes_)
     : surf_filters(column_hashes_.size())
 {
+    LOG_TRACE(surf_index_logger, "MergeTreeIndexGranuleSurfFilter constructor called with {} columns", column_hashes_.size());
+    
     if (column_hashes_.empty())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Granule_index_blocks empty or total_rows is zero.");
 

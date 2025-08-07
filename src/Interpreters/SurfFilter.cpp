@@ -12,14 +12,19 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <Common/logger_useful.h>
 
 
 namespace DB
 {
+
 namespace ErrorCodes
 {
-    extern const int BAD_ARGUMENTS;
+extern const int BAD_ARGUMENTS;
+extern const int LOGICAL_ERROR;
 }
+
+static LoggerPtr surf_logger = getLogger("SurfFilter");
 
 SurfFilterParameters::SurfFilterParameters(
     bool include_dense_,
@@ -73,35 +78,56 @@ void SurfFilter::initializeForIncrementalInsertion(const SurfFilterParameters & 
 
 bool SurfFilter::insert(const std::string& key)
 {
-    if (!incremental_mode_)
+    LOG_TRACE(surf_logger, "SurfFilter::insert called with key: '{}'", key);
+    
+    if (!incremental_mode_) {
+        LOG_TRACE(surf_logger, "insert: not in incremental mode, returning false");
         return false;
+    }
     
     // Check if the key maintains sorted order
-    if (!incremental_keys_.empty() && key < incremental_keys_.back())
+    if (!incremental_keys_.empty() && key < incremental_keys_.back()) {
+        LOG_TRACE(surf_logger, "insert: key violates sort order, returning false");
         return false; // Violates sort order
+    }
     
     incremental_keys_.push_back(key);
+    LOG_TRACE(surf_logger, "insert: key added, total keys: {}", incremental_keys_.size());
     return true;
 }
 
 void SurfFilter::finalize()
 {
-    if (!incremental_mode_ || incremental_keys_.empty())
+    LOG_TRACE(surf_logger, "SurfFilter::finalize() called");
+    LOG_TRACE(surf_logger, "finalize: incremental_mode_={}, incremental_keys_.size()={}", 
+              (incremental_mode_ ? "true" : "false"), incremental_keys_.size());
+    
+    if (!incremental_mode_ || incremental_keys_.empty()) {
+        LOG_TRACE(surf_logger, "finalize: early return - not in incremental mode or no keys");
         return;
+    }
         
     // Build the final SuRF from accumulated keys
+    LOG_TRACE(surf_logger, "finalize: building SuRF from {} keys", incremental_keys_.size());
     buildFromKeys(incremental_keys_);
     incremental_keys_.clear();
     incremental_mode_ = false;
     finalized_ = true;
+    LOG_TRACE(surf_logger, "finalize: completed successfully");
 }
 
 bool SurfFilter::lookupKey(const std::string& key) const
 {
-    if (!finalized_ || !surf_)
+    LOG_TRACE(surf_logger, "SurfFilter::lookupKey called with key: '{}'", key);
+    
+    if (!finalized_ || !surf_) {
+        LOG_TRACE(surf_logger, "SurfFilter::lookupKey: not finalized or no surf_, returning false");
         return false; // Not ready for lookups
+    }
         
-    return surf_->lookupKey(key);
+    bool result = surf_->lookupKey(key);
+    LOG_TRACE(surf_logger, "SurfFilter::lookupKey: surf lookup result: {}", (result ? "true" : "false"));
+    return result;
 }
 
 // Range capabilities commented out for now
@@ -191,10 +217,16 @@ void SurfFilter::destroy()
 
 void SurfFilter::buildFromKeys(const std::vector<std::string>& keys)
 {
+    LOG_TRACE(surf_logger, "buildFromKeys called with {} keys", keys.size());
+    
     if (keys.empty()) {
+        LOG_TRACE(surf_logger, "buildFromKeys: no keys, setting finalized_=false");
         finalized_ = false;
         return;
     }
+    
+    LOG_TRACE(surf_logger, "buildFromKeys: creating SuRF with params - include_dense={}, sparse_dense_ratio={}", 
+              (params_.include_dense ? "true" : "false"), params_.sparse_dense_ratio);
     
     // Create SuRF with the specified parameters
     surf_ = std::make_unique<surf::SuRF>(
@@ -206,6 +238,7 @@ void SurfFilter::buildFromKeys(const std::vector<std::string>& keys)
         params_.real_suffix_len
     );
     
+    LOG_TRACE(surf_logger, "buildFromKeys: SuRF created successfully");
     finalized_ = true;
     incremental_mode_ = false;
 }
@@ -274,13 +307,17 @@ void SurfFilter::add(const char* data, size_t len)
 
 void SurfFilter::add(const std::string& token)
 {
+    LOG_TRACE(surf_logger, "SurfFilter::add called with token: '{}'", token);
+    
     if (!incremental_mode_) {
+        LOG_TRACE(surf_logger, "add: not in incremental mode, initializing");
         // Initialize for incremental insertion if not already done
         initializeForIncrementalInsertion(params_);
     }
     
     // Add the token as a key
-    insert(token);
+    bool result = insert(token);
+    LOG_TRACE(surf_logger, "add: insert result: {}", (result ? "true" : "false"));
 }
 
 }
