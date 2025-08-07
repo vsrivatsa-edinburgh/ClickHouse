@@ -35,6 +35,8 @@ public:
     void deserializeBinary(ReadBuffer & istr, MergeTreeIndexVersion version) override;
 
     const std::vector<SurfFilterPtr> & getFilters() const { return surf_filters; }
+    void setFilters(const std::vector<SurfFilterPtr> & filters) { surf_filters = filters; }
+    void setTotalRows(size_t rows) { total_rows = rows; }
 
 private:
     size_t total_rows = 0;
@@ -131,10 +133,10 @@ public:
 private:
     const Names index_columns_name;
 
-    // Store keys for SuRF construction instead of hashes
-    std::vector<std::set<std::string>> column_keys;
-    // Keep hashes for backward compatibility during transition
-    std::vector<HashSet<UInt64>> column_hashes;
+    // SuRF filters for incremental insertion
+    std::vector<SurfFilterPtr> surf_filters;
+    // Accumulate keys for sorting before insertion
+    std::vector<std::vector<std::string>> accumulated_keys;
     size_t total_rows = 0;
 };
 

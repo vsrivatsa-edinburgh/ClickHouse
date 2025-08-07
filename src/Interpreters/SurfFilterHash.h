@@ -1,38 +1,49 @@
 #pragma once
 
-#include <Common/HashTable/Hash.h>
-#include <Columns/IColumn.h>
 #include <Columns/ColumnArray.h>
 #include <Columns/ColumnConst.h>
 #include <Columns/ColumnDecimal.h>
-#include <Columns/ColumnNullable.h>
-#include <Columns/ColumnsNumber.h>
-#include <Columns/ColumnString.h>
 #include <Columns/ColumnFixedString.h>
-#include <DataTypes/IDataType.h>
+#include <Columns/ColumnNullable.h>
+#include <Columns/ColumnString.h>
+#include <Columns/ColumnsNumber.h>
+#include <Columns/IColumn.h>
 #include <DataTypes/DataTypeArray.h>
-#include <DataTypes/DataTypeNullable.h>
 #include <DataTypes/DataTypeFixedString.h>
 #include <DataTypes/DataTypeLowCardinality.h>
+#include <DataTypes/DataTypeNullable.h>
 #include <DataTypes/DataTypesNumber.h>
+#include <DataTypes/IDataType.h>
 #include <Interpreters/SurfFilter.h>
+#include <Common/HashTable/Hash.h>
 
 namespace DB
 {
 
 namespace ErrorCodes
 {
-    extern const int ILLEGAL_COLUMN;
-    extern const int BAD_ARGUMENTS;
+extern const int ILLEGAL_COLUMN;
+extern const int BAD_ARGUMENTS;
 }
 
 struct SurfFilterHash
 {
-    static constexpr UInt64 bf_hash_seed[15] = {
-        13635471485423070496ULL, 10336109063487487899ULL, 17779957404565211594ULL, 8988612159822229247ULL, 4954614162757618085ULL,
-        12980113590177089081ULL, 9263883436177860930ULL, 3656772712723269762ULL, 10362091744962961274ULL, 7582936617938287249ULL,
-        15033938188484401405ULL, 18286745649494826751ULL, 6852245486148412312ULL, 8886056245089344681ULL, 10151472371158292780ULL
-    };
+    static constexpr UInt64 bf_hash_seed[15]
+        = {13635471485423070496ULL,
+           10336109063487487899ULL,
+           17779957404565211594ULL,
+           8988612159822229247ULL,
+           4954614162757618085ULL,
+           12980113590177089081ULL,
+           9263883436177860930ULL,
+           3656772712723269762ULL,
+           10362091744962961274ULL,
+           7582936617938287249ULL,
+           15033938188484401405ULL,
+           18286745649494826751ULL,
+           6852245486148412312ULL,
+           8886056245089344681ULL,
+           10151472371158292780ULL};
 
     template <typename FieldGetType, typename FieldType>
     static UInt64 getNumberTypeHash(const Field & field)
@@ -67,10 +78,8 @@ struct SurfFilterHash
 
     static ColumnPtr hashWithField(const IDataType * data_type, const Field & field)
     {
-        const auto & build_hash_column = [&](const UInt64 & hash) -> ColumnPtr
-        {
-            return ColumnConst::create(ColumnUInt64::create(1, hash), 1);
-        };
+        const auto & build_hash_column
+            = [&](const UInt64 & hash) -> ColumnPtr { return ColumnConst::create(ColumnUInt64::create(1, hash), 1); };
 
 
         WhichDataType which(data_type);
@@ -129,6 +138,42 @@ struct SurfFilterHash
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unexpected type {} of surf filter index.", data_type->getName());
     }
 
+    // New function to create key column instead of hash column for SuRF key-based lookups
+    static ColumnPtr keyWithField(const IDataType * data_type, const Field & field)
+    {
+        const auto & build_key_column = [&](const String & key) -> ColumnPtr
+        {
+            auto string_column = ColumnString::create();
+            string_column->insert(key);
+            return ColumnConst::create(std::move(string_column), 1);
+        };
+
+        WhichDataType which(data_type);
+
+        // Convert field to string representation that SuRF can use
+        if (which.isUInt8() || which.isUInt16() || which.isUInt32() || which.isUInt64() || which.isUInt128() || which.isUInt256()
+            || which.isInt8() || which.isInt16() || which.isInt32() || which.isInt64() || which.isInt128() || which.isInt256()
+            || which.isEnum8() || which.isEnum16() || which.isDate() || which.isDate32() || which.isDateTime() || which.isDateTime64()
+            || which.isFloat32() || which.isFloat64() || which.isUUID() || which.isIPv4() || which.isIPv6())
+        {
+            return build_key_column(field.dump());
+        }
+        if (which.isString())
+        {
+            return build_key_column(field.isNull() ? "" : field.safeGet<String>());
+        }
+        if (which.isFixedString())
+        {
+            if (!field.isNull())
+                return build_key_column(field.safeGet<String>());
+
+            const auto * fixed_string_type = typeid_cast<const DataTypeFixedString *>(data_type);
+            return build_key_column(String(fixed_string_type->getN(), '\0'));
+        }
+
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unexpected type {} of surf filter index.", data_type->getName());
+    }
+
     static ColumnPtr hashWithColumn(const DataTypePtr & data_type, const ColumnPtr & column, size_t pos, size_t limit)
     {
         WhichDataType which(data_type);
@@ -140,7 +185,7 @@ struct SurfFilterHash
                 throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unexpected type {} of surf filter index.", data_type->getName());
 
             const auto & offsets = array_col->getOffsets();
-            limit = offsets[pos + limit - 1] - offsets[pos - 1];    /// PaddedPODArray allows access on index -1.
+            limit = offsets[pos + limit - 1] - offsets[pos - 1]; /// PaddedPODArray allows access on index -1.
             pos = offsets[pos - 1];
 
             if (limit == 0)
@@ -166,32 +211,58 @@ struct SurfFilterHash
     {
         WhichDataType which(data_type);
 
-        if (which.isUInt8()) getNumberTypeHash<UInt8, is_first>(column, vec, pos);
-        else if (which.isUInt16()) getNumberTypeHash<UInt16, is_first>(column, vec, pos);
-        else if (which.isUInt32()) getNumberTypeHash<UInt32, is_first>(column, vec, pos);
-        else if (which.isUInt64()) getNumberTypeHash<UInt64, is_first>(column, vec, pos);
-        else if (which.isUInt128()) getNumberTypeHash<UInt128, is_first>(column, vec, pos);
-        else if (which.isUInt256()) getNumberTypeHash<UInt256, is_first>(column, vec, pos);
-        else if (which.isInt8()) getNumberTypeHash<Int8, is_first>(column, vec, pos);
-        else if (which.isInt16()) getNumberTypeHash<Int16, is_first>(column, vec, pos);
-        else if (which.isInt32()) getNumberTypeHash<Int32, is_first>(column, vec, pos);
-        else if (which.isInt64()) getNumberTypeHash<Int64, is_first>(column, vec, pos);
-        else if (which.isInt128()) getNumberTypeHash<Int128, is_first>(column, vec, pos);
-        else if (which.isInt256()) getNumberTypeHash<Int256, is_first>(column, vec, pos);
-        else if (which.isEnum8()) getNumberTypeHash<Int8, is_first>(column, vec, pos);
-        else if (which.isEnum16()) getNumberTypeHash<Int16, is_first>(column, vec, pos);
-        else if (which.isDate()) getNumberTypeHash<UInt16, is_first>(column, vec, pos);
-        else if (which.isDate32()) getNumberTypeHash<Int32, is_first>(column, vec, pos);
-        else if (which.isDateTime()) getNumberTypeHash<UInt32, is_first>(column, vec, pos);
-        else if (which.isDateTime64()) getDecimalTypeHash<DateTime64, is_first>(column, vec, pos);
-        else if (which.isFloat32()) getNumberTypeHash<Float32, is_first>(column, vec, pos);
-        else if (which.isFloat64()) getNumberTypeHash<Float64, is_first>(column, vec, pos);
-        else if (which.isUUID()) getNumberTypeHash<UUID, is_first>(column, vec, pos);
-        else if (which.isIPv4()) getNumberTypeHash<IPv4, is_first>(column, vec, pos);
-        else if (which.isIPv6()) getNumberTypeHash<IPv6, is_first>(column, vec, pos);
-        else if (which.isString()) getStringTypeHash<is_first>(column, vec, pos);
-        else if (which.isFixedString()) getStringTypeHash<is_first>(column, vec, pos);
-        else throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unexpected type {} of surf filter index.", data_type->getName());
+        if (which.isUInt8())
+            getNumberTypeHash<UInt8, is_first>(column, vec, pos);
+        else if (which.isUInt16())
+            getNumberTypeHash<UInt16, is_first>(column, vec, pos);
+        else if (which.isUInt32())
+            getNumberTypeHash<UInt32, is_first>(column, vec, pos);
+        else if (which.isUInt64())
+            getNumberTypeHash<UInt64, is_first>(column, vec, pos);
+        else if (which.isUInt128())
+            getNumberTypeHash<UInt128, is_first>(column, vec, pos);
+        else if (which.isUInt256())
+            getNumberTypeHash<UInt256, is_first>(column, vec, pos);
+        else if (which.isInt8())
+            getNumberTypeHash<Int8, is_first>(column, vec, pos);
+        else if (which.isInt16())
+            getNumberTypeHash<Int16, is_first>(column, vec, pos);
+        else if (which.isInt32())
+            getNumberTypeHash<Int32, is_first>(column, vec, pos);
+        else if (which.isInt64())
+            getNumberTypeHash<Int64, is_first>(column, vec, pos);
+        else if (which.isInt128())
+            getNumberTypeHash<Int128, is_first>(column, vec, pos);
+        else if (which.isInt256())
+            getNumberTypeHash<Int256, is_first>(column, vec, pos);
+        else if (which.isEnum8())
+            getNumberTypeHash<Int8, is_first>(column, vec, pos);
+        else if (which.isEnum16())
+            getNumberTypeHash<Int16, is_first>(column, vec, pos);
+        else if (which.isDate())
+            getNumberTypeHash<UInt16, is_first>(column, vec, pos);
+        else if (which.isDate32())
+            getNumberTypeHash<Int32, is_first>(column, vec, pos);
+        else if (which.isDateTime())
+            getNumberTypeHash<UInt32, is_first>(column, vec, pos);
+        else if (which.isDateTime64())
+            getDecimalTypeHash<DateTime64, is_first>(column, vec, pos);
+        else if (which.isFloat32())
+            getNumberTypeHash<Float32, is_first>(column, vec, pos);
+        else if (which.isFloat64())
+            getNumberTypeHash<Float64, is_first>(column, vec, pos);
+        else if (which.isUUID())
+            getNumberTypeHash<UUID, is_first>(column, vec, pos);
+        else if (which.isIPv4())
+            getNumberTypeHash<IPv4, is_first>(column, vec, pos);
+        else if (which.isIPv6())
+            getNumberTypeHash<IPv6, is_first>(column, vec, pos);
+        else if (which.isString())
+            getStringTypeHash<is_first>(column, vec, pos);
+        else if (which.isFixedString())
+            getStringTypeHash<is_first>(column, vec, pos);
+        else
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unexpected type {} of surf filter index.", data_type->getName());
     }
 
     template <typename Type, bool is_first>
@@ -265,8 +336,7 @@ struct SurfFilterHash
             {
                 ColumnString::Offset current_offset = offsets[index + pos - 1];
                 size_t length = offsets[index + pos] - current_offset - 1 /* terminating zero */;
-                UInt64 city_hash = CityHash_v1_0_2::CityHash64(
-                    reinterpret_cast<const char *>(&data[current_offset]), length);
+                UInt64 city_hash = CityHash_v1_0_2::CityHash64(reinterpret_cast<const char *>(&data[current_offset]), length);
 
                 if constexpr (is_first)
                     vec[index] = city_hash;
@@ -311,30 +381,56 @@ struct SurfFilterHash
         /// For the smallest index per level in probability_lookup_table
         static const size_t min_probability_index_each_bits[] = {0, 0, 1, 2, 3, 3, 4, 5, 6, 6, 7, 8, 8, 9, 10, 10, 11, 12, 12, 13, 14};
 
-        static const long double probability_lookup_table[MAX_BITS_PER_ROW + 1][MAX_HASH_FUNCTION_COUNT] =
-            {
-                {1.0},  /// dummy, 0 bits per row
-                {1.0, 1.0},
-                {1.0, 0.393,  0.400},
-                {1.0, 0.283,  0.237,   0.253},
-                {1.0, 0.221,  0.155,   0.147,   0.160},
-                {1.0, 0.181,  0.109,   0.092,   0.092,   0.101}, // 5
-                {1.0, 0.154,  0.0804,  0.0609,  0.0561,  0.0578,   0.0638},
-                {1.0, 0.133,  0.0618,  0.0423,  0.0359,  0.0347,   0.0364},
-                {1.0, 0.118,  0.0489,  0.0306,  0.024,   0.0217,   0.0216,   0.0229},
-                {1.0, 0.105,  0.0397,  0.0228,  0.0166,  0.0141,   0.0133,   0.0135,   0.0145},
-                {1.0, 0.0952, 0.0329,  0.0174,  0.0118,  0.00943,  0.00844,  0.00819,  0.00846}, // 10
-                {1.0, 0.0869, 0.0276,  0.0136,  0.00864, 0.0065,   0.00552,  0.00513,  0.00509},
-                {1.0, 0.08,   0.0236,  0.0108,  0.00646, 0.00459,  0.00371,  0.00329,  0.00314},
-                {1.0, 0.074,  0.0203,  0.00875, 0.00492, 0.00332,  0.00255,  0.00217,  0.00199,  0.00194},
-                {1.0, 0.0689, 0.0177,  0.00718, 0.00381, 0.00244,  0.00179,  0.00146,  0.00129,  0.00121,  0.0012},
-                {1.0, 0.0645, 0.0156,  0.00596, 0.003,   0.00183,  0.00128,  0.001,    0.000852, 0.000775, 0.000744}, // 15
-                {1.0, 0.0606, 0.0138,  0.005,   0.00239, 0.00139,  0.000935, 0.000702, 0.000574, 0.000505, 0.00047,  0.000459},
-                {1.0, 0.0571, 0.0123,  0.00423, 0.00193, 0.00107,  0.000692, 0.000499, 0.000394, 0.000335, 0.000302, 0.000287, 0.000284},
-                {1.0, 0.054,  0.0111,  0.00362, 0.00158, 0.000839, 0.000519, 0.00036,  0.000275, 0.000226, 0.000198, 0.000183, 0.000176},
-                {1.0, 0.0513, 0.00998, 0.00312, 0.0013,  0.000663, 0.000394, 0.000264, 0.000194, 0.000155, 0.000132, 0.000118, 0.000111, 0.000109},
-                {1.0, 0.0488, 0.00906, 0.0027,  0.00108, 0.00053,  0.000303, 0.000196, 0.00014,  0.000108, 8.89e-05, 7.77e-05, 7.12e-05, 6.79e-05, 6.71e-05} // 20
-            };
+        static const long double probability_lookup_table[MAX_BITS_PER_ROW + 1][MAX_HASH_FUNCTION_COUNT] = {
+            {1.0}, /// dummy, 0 bits per row
+            {1.0, 1.0},
+            {1.0, 0.393, 0.400},
+            {1.0, 0.283, 0.237, 0.253},
+            {1.0, 0.221, 0.155, 0.147, 0.160},
+            {1.0, 0.181, 0.109, 0.092, 0.092, 0.101}, // 5
+            {1.0, 0.154, 0.0804, 0.0609, 0.0561, 0.0578, 0.0638},
+            {1.0, 0.133, 0.0618, 0.0423, 0.0359, 0.0347, 0.0364},
+            {1.0, 0.118, 0.0489, 0.0306, 0.024, 0.0217, 0.0216, 0.0229},
+            {1.0, 0.105, 0.0397, 0.0228, 0.0166, 0.0141, 0.0133, 0.0135, 0.0145},
+            {1.0, 0.0952, 0.0329, 0.0174, 0.0118, 0.00943, 0.00844, 0.00819, 0.00846}, // 10
+            {1.0, 0.0869, 0.0276, 0.0136, 0.00864, 0.0065, 0.00552, 0.00513, 0.00509},
+            {1.0, 0.08, 0.0236, 0.0108, 0.00646, 0.00459, 0.00371, 0.00329, 0.00314},
+            {1.0, 0.074, 0.0203, 0.00875, 0.00492, 0.00332, 0.00255, 0.00217, 0.00199, 0.00194},
+            {1.0, 0.0689, 0.0177, 0.00718, 0.00381, 0.00244, 0.00179, 0.00146, 0.00129, 0.00121, 0.0012},
+            {1.0, 0.0645, 0.0156, 0.00596, 0.003, 0.00183, 0.00128, 0.001, 0.000852, 0.000775, 0.000744}, // 15
+            {1.0, 0.0606, 0.0138, 0.005, 0.00239, 0.00139, 0.000935, 0.000702, 0.000574, 0.000505, 0.00047, 0.000459},
+            {1.0, 0.0571, 0.0123, 0.00423, 0.00193, 0.00107, 0.000692, 0.000499, 0.000394, 0.000335, 0.000302, 0.000287, 0.000284},
+            {1.0, 0.054, 0.0111, 0.00362, 0.00158, 0.000839, 0.000519, 0.00036, 0.000275, 0.000226, 0.000198, 0.000183, 0.000176},
+            {1.0,
+             0.0513,
+             0.00998,
+             0.00312,
+             0.0013,
+             0.000663,
+             0.000394,
+             0.000264,
+             0.000194,
+             0.000155,
+             0.000132,
+             0.000118,
+             0.000111,
+             0.000109},
+            {1.0,
+             0.0488,
+             0.00906,
+             0.0027,
+             0.00108,
+             0.00053,
+             0.000303,
+             0.000196,
+             0.00014,
+             0.000108,
+             8.89e-05,
+             7.77e-05,
+             7.12e-05,
+             6.79e-05,
+             6.71e-05} // 20
+        };
 
         for (size_t bits_per_row = 1; bits_per_row < MAX_BITS_PER_ROW; ++bits_per_row)
         {
