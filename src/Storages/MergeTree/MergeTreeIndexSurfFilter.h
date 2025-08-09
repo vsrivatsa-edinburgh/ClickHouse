@@ -21,11 +21,11 @@ extern const int LOGICAL_ERROR;
 class MergeTreeIndexGranuleSurfFilter final : public IMergeTreeIndexGranule
 {
 public:
-    MergeTreeIndexGranuleSurfFilter(size_t index_columns_);
+    MergeTreeIndexGranuleSurfFilter(size_t index_columns_, double false_positive_probability = 0.025);
 
-    MergeTreeIndexGranuleSurfFilter(const std::vector<HashSet<UInt64>> & column_hashes);
+    MergeTreeIndexGranuleSurfFilter(const std::vector<HashSet<UInt64>> & column_hashes, double false_positive_probability = 0.025);
 
-    MergeTreeIndexGranuleSurfFilter(const std::vector<std::set<std::string>> & column_keys);
+    MergeTreeIndexGranuleSurfFilter(const std::vector<std::set<std::string>> & column_keys, double false_positive_probability = 0.025);
 
     bool empty() const override;
 
@@ -42,8 +42,8 @@ private:
     size_t total_rows = 0;
     std::vector<SurfFilterPtr> surf_filters;
 
-    void fillingSurfFilter(SurfFilterPtr & bf, const HashSet<UInt64> & hashes) const;
-    void fillingSurfFilterWithKeys(SurfFilterPtr & bf, const std::set<std::string> & keys) const;
+    void fillingSurfFilter(SurfFilterPtr & bf, const HashSet<UInt64> & hashes, double false_positive_probability) const;
+    void fillingSurfFilterWithKeys(SurfFilterPtr & bf, const std::set<std::string> & keys, double false_positive_probability) const;
 };
 
 class MergeTreeIndexConditionSurfFilter final : public IMergeTreeIndexCondition, WithContext
@@ -122,7 +122,7 @@ private:
 class MergeTreeIndexAggregatorSurfFilter final : public IMergeTreeIndexAggregator
 {
 public:
-    MergeTreeIndexAggregatorSurfFilter(const Names & columns_name_);
+    MergeTreeIndexAggregatorSurfFilter(const Names & columns_name_, double false_positive_probability = 0.025);
 
     bool empty() const override;
 
@@ -138,6 +138,7 @@ private:
     // Accumulate keys for sorting before insertion
     std::vector<std::vector<std::string>> accumulated_keys;
     size_t total_rows = 0;
+    double false_positive_probability;
 };
 
 

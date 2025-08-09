@@ -17,8 +17,8 @@
 #include <Common/OptimizedRegularExpression.h>
 #include <Common/quoteString.h>
 
-#include <Poco/Logger.h>
 #include <iostream>
+#include <Poco/Logger.h>
 #include <Common/logger_useful.h>
 
 
@@ -191,7 +191,7 @@ bool MergeTreeConditionSurfFilterText::alwaysUnknownOrTrue() const
 bool MergeTreeConditionSurfFilterText::mayBeTrueOnGranule(MergeTreeIndexGranulePtr idx_granule) const
 {
     LOG_TRACE(surf_text_logger, "mayBeTrueOnGranule called");
-    
+
     std::shared_ptr<MergeTreeIndexGranuleSurfFilterText> granule
         = std::dynamic_pointer_cast<MergeTreeIndexGranuleSurfFilterText>(idx_granule);
     if (!granule)
@@ -756,7 +756,7 @@ MergeTreeIndexConditionPtr MergeTreeIndexSurfFilterText::createIndexCondition(co
 
 MergeTreeIndexPtr surfFilterIndexTextCreator(const IndexDescription & index)
 {
-    if (index.type == NgramTokenExtractor::getName())
+    if (index.type == NgramTokenExtractor::getName2())
     {
         size_t n = index.arguments[0].safeGet<size_t>();
         // Use reasonable SuRF defaults - user parameters were for Bloom filters
@@ -772,7 +772,7 @@ MergeTreeIndexPtr surfFilterIndexTextCreator(const IndexDescription & index)
 
         return std::make_shared<MergeTreeIndexSurfFilterText>(index, params, std::move(tokenizer));
     }
-    if (index.type == DefaultTokenExtractor::getName())
+    if (index.type == DefaultTokenExtractor::getName2())
     {
         // Use reasonable SuRF defaults - user parameters were for Bloom filters
         SurfFilterParameters params(
