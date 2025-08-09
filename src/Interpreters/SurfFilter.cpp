@@ -12,7 +12,6 @@
 #include <string>
 #include <vector>
 #include <surf.hpp>
-#include <Common/logger_useful.h>
 
 
 namespace DB
@@ -79,59 +78,42 @@ void SurfFilter::initializeForIncrementalInsertion(const SurfFilterParameters & 
 
     incremental_mode_ = true;
     finalized_ = false;
-
-    LOG_TRACE(surf_logger, "SurfFilter initialized for incremental insertion: {}", "");
 }
 
 bool SurfFilter::insert(const std::string & key)
 {
-    LOG_TRACE(surf_logger, "SurfFilter::insert called with key: '{}'", key);
-
     if (!incremental_mode_ || !surf_)
     {
-        LOG_TRACE(surf_logger, "insert: not in incremental mode or no surf_, returning false: {}", "");
         return false;
     }
 
     // Use the SuRF library's direct insert method
     bool result = surf_->insert(key);
-    LOG_TRACE(surf_logger, "insert: surf_->insert result: {}", (result ? "true" : "false"));
     return result;
 }
 
 void SurfFilter::finalize()
 {
-    LOG_TRACE(surf_logger, "SurfFilter::finalize() called: {}", "");
-    LOG_TRACE(
-        surf_logger, "finalize: incremental_mode_={}, surf_exists={}", (incremental_mode_ ? "true" : "false"), (surf_ ? "true" : "false"));
-
     if (!incremental_mode_ || !surf_)
     {
-        LOG_TRACE(surf_logger, "finalize: early return - not in incremental mode or no surf_: {}", "");
         return;
     }
 
     // Call SuRF's finalize to optimize the LOUDS-dense structure
-    LOG_TRACE(surf_logger, "finalize: calling surf_->finalize(): {}", "");
     surf_->finalize();
 
     incremental_mode_ = false;
     finalized_ = true;
-    LOG_TRACE(surf_logger, "finalize: completed successfully");
 }
 
 bool SurfFilter::lookupKey(const std::string & key) const
 {
-    LOG_TRACE(surf_logger, "SurfFilter::lookupKey called with key: '{}'", key);
-
     if (!finalized_ || !surf_)
     {
-        LOG_TRACE(surf_logger, "SurfFilter::lookupKey: not finalized or no surf_, returning false: {}", "");
         return false; // Not ready for lookups
     }
 
     bool result = surf_->lookupKey(key);
-    LOG_TRACE(surf_logger, "SurfFilter::lookupKey: surf lookup result: {}", (result ? "true" : "false"));
     return result;
 }
 
@@ -168,9 +150,8 @@ bool SurfFilter::isEmpty() const
 
     if (incremental_mode_)
     {
-        // In incremental mode, we need to check if any keys were inserted
-        // We can't easily check this without finalizing, so we'll be conservative
-        return false;
+        // In incremental mode, the structure is deemed empty until finalized
+        return true;
     }
 
     if (finalized_)
@@ -246,20 +227,11 @@ void SurfFilter::destroy()
 
 void SurfFilter::buildFromKeys(const std::vector<std::string> & keys)
 {
-    LOG_TRACE(surf_logger, "buildFromKeys called with {} keys", keys.size());
-
     if (keys.empty())
     {
-        LOG_TRACE(surf_logger, "buildFromKeys: no keys, setting finalized_=false");
         finalized_ = false;
         return;
     }
-
-    LOG_TRACE(
-        surf_logger,
-        "buildFromKeys: creating SuRF with params - include_dense={}, sparse_dense_ratio={}",
-        (params_.include_dense ? "true" : "false"),
-        params_.sparse_dense_ratio);
 
     // Create SuRF with the specified parameters
     surf_ = std::make_unique<surf::SuRF>(
@@ -270,28 +242,8 @@ void SurfFilter::buildFromKeys(const std::vector<std::string> & keys)
         params_.hash_suffix_len,
         params_.real_suffix_len);
 
-    LOG_TRACE(surf_logger, "buildFromKeys: SuRF created successfully");
     finalized_ = true;
     incremental_mode_ = false;
-}
-
-void SurfFilter::createFromBuilder()
-{
-    // This would be used if we had a builder-based approach
-    finalized_ = true;
-    incremental_mode_ = false;
-}
-
-bool operator==(const SurfFilter & a, const SurfFilter & b)
-{
-    // Compare basic state and parameters
-    if (a.finalized_ != b.finalized_ || a.incremental_mode_ != b.incremental_mode_ || a.params_.include_dense != b.params_.include_dense
-        || a.params_.sparse_dense_ratio != b.params_.sparse_dense_ratio || a.params_.suffix_type != b.params_.suffix_type)
-        return false;
-
-    // If both have SuRF instances, we can't easily compare them directly
-    // This is a limitation of the current implementation
-    return (a.surf_ == nullptr) == (b.surf_ == nullptr);
 }
 
 DataTypePtr SurfFilter::getPrimitiveType(const DataTypePtr & data_type)
@@ -331,24 +283,15 @@ void SurfFilter::add(const char * data, size_t len)
     if (data && len > 0)
     {
         std::string token(data, len);
-        add(token);
+        if (!incremental_mode_)
+        {
+            // Initialize for incremental insertion if not already done
+            initializeForIncrementalInsertion(params_);
+        }
+
+        // Add the token as a key
+        insert(token);
     }
-}
-
-void SurfFilter::add(const std::string & token)
-{
-    LOG_TRACE(surf_logger, "SurfFilter::add called with token: '{}'", token);
-
-    if (!incremental_mode_)
-    {
-        LOG_TRACE(surf_logger, "add: not in incremental mode, initializing");
-        // Initialize for incremental insertion if not already done
-        initializeForIncrementalInsertion(params_);
-    }
-
-    // Add the token as a key
-    bool result = insert(token);
-    LOG_TRACE(surf_logger, "add: insert result: {}", (result ? "true" : "false"));
 }
 
 }

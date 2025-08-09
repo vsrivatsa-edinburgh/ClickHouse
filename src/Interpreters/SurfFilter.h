@@ -1,14 +1,14 @@
 #pragma once
 
-#include <base/types.h>
 #include <Columns/IColumn_fwd.h>
 #include <DataTypes/IDataType.h>
 #include <IO/ReadBuffer.h>
 #include <IO/WriteBuffer.h>
+#include <base/types.h>
 
-#include <vector>
-#include <string>
 #include <memory>
+#include <string>
+#include <vector>
 
 // Include SuRF header from contrib library
 #include <surf.hpp>
@@ -79,29 +79,28 @@ struct SurfFilterParameters
 
 class SurfFilter
 {
-
 public:
     typedef UInt64 UnderType;
     typedef std::vector<UnderType> Container;
 
     explicit SurfFilter(const SurfFilterParameters & params);
-    
+
     /// Constructor for building SuRF from a sorted list of keys
     /// Keys must be provided in sorted order
-    SurfFilter(const std::vector<std::string>& keys, const SurfFilterParameters & params);
+    SurfFilter(const std::vector<std::string> & keys, const SurfFilterParameters & params);
 
     /// Initialize empty SuRF for incremental insertion
     void initializeForIncrementalInsertion(const SurfFilterParameters & params);
-    
+
     /// Insert a single key (must be in sorted order relative to previous keys)
-    bool insert(const std::string& key);
-    
+    bool insert(const std::string & key);
+
     /// Finalize the SuRF after incremental insertions
     void finalize();
 
     /// Point lookup - returns true if key might exist (may have false positives)
-    bool lookupKey(const std::string& key) const;
-    
+    bool lookupKey(const std::string & key) const;
+
     // Range capabilities commented out for now - will be implemented later
     /*
     /// Range lookup - returns true if any key in range might exist
@@ -126,7 +125,7 @@ public:
 
     /// Serialize SuRF to buffer
     void serialize(WriteBuffer & ostr) const;
-    
+
     /// Deserialize SuRF from buffer
     void deserialize(ReadBuffer & istr);
 
@@ -135,14 +134,12 @@ public:
 
     /// Legacy compatibility method for token extraction
     /// Adds a token to the filter (converts to string and inserts)
-    void add(const char* data, size_t len);
-    
-    /// Legacy compatibility method for token extraction  
-    void add(const std::string& token);
+    void add(const char * data, size_t len);
+
 
 private:
     SurfFilterParameters params_;
-    
+
     // Use actual SuRF implementation from contrib
     std::unique_ptr<surf::SuRF> surf_;
     std::vector<std::string> incremental_keys_; // Keys accumulated for incremental construction
@@ -150,19 +147,13 @@ private:
     bool finalized_;
 
     // Helper methods
-    void buildFromKeys(const std::vector<std::string>& keys);
-    void createFromBuilder();
+    void buildFromKeys(const std::vector<std::string> & keys);
 
 public:
     static ColumnPtr getPrimitiveColumn(const ColumnPtr & column);
     static DataTypePtr getPrimitiveType(const DataTypePtr & data_type);
-    
-    friend bool operator== (const SurfFilter & a, const SurfFilter & b);
 };
 
 typedef std::shared_ptr<SurfFilter> SurfFilterPtr;
-
-bool operator== (const SurfFilter & a, const SurfFilter & b);
-
 
 }
