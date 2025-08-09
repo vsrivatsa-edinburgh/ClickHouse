@@ -141,11 +141,11 @@ MergeTreeIndexFactory::MergeTreeIndexFactory()
     registerCreator("surf_filter", surfFilterIndexCreator);
     registerValidator("surf_filter", surfFilterIndexValidator);
 
-    registerCreator("ngrambf_v2", surfFilterIndexTextCreator);
-    registerValidator("ngrambf_v2", surfFilterIndexTextValidator);
+    registerCreator("ngramsf_v1", surfFilterIndexTextCreator);
+    registerValidator("ngramsf_v1", surfFilterIndexTextValidator);
 
-    registerCreator("tokenbf_v2", surfFilterIndexTextCreator);
-    registerValidator("tokenbf_v2", surfFilterIndexTextValidator);
+    registerCreator("tokensf_v1", surfFilterIndexTextCreator);
+    registerValidator("tokensf_v1", surfFilterIndexTextValidator);
 
     registerCreator("hypothesis", hypothesisIndexCreator);
 

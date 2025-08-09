@@ -754,19 +754,72 @@ MergeTreeIndexConditionPtr MergeTreeIndexSurfFilterText::createIndexCondition(co
     return std::make_shared<MergeTreeConditionSurfFilterText>(predicate, context, index.sample_block, params, token_extractor.get());
 }
 
+/// Convert Bloom filter parameters to SuRF parameters for text indexes
+///
+/// Bloom filter parameters (from original implementation):
+/// - filter_size_bytes: Size of the Bloom filter in bytes (e.g., 256, 512)
+/// - num_hash_functions: Number of hash functions used (typically 2-8)
+/// - random_seed: Seed for hash functions (not used in SuRF)
+///
+/// SuRF parameters (what we map to):
+/// - include_dense: Always true for text indexes
+/// - sparse_dense_ratio: Fixed at 16 for good performance
+/// - suffix_type: kNone, kHash, or kReal based on desired accuracy
+/// - hash_suffix_len: Length of hash suffixes (0, 4, or 8)
+/// - real_suffix_len: Length of real suffixes (0 or 8)
+///
+/// Mapping strategy:
+/// - Larger filter sizes + more hash functions = lower false positive rate desired
+/// - Lower false positive rate = more aggressive suffix storage in SuRF
+static SurfFilterParameters
+convertBloomToSurfParameters(size_t filter_size_bytes, size_t num_hash_functions, size_t /*random_seed*/) // seed not used in SuRF
+{
+    // Map Bloom filter size and hash functions to SuRF suffix configuration
+    // Larger filter sizes and more hash functions generally indicate desire for lower false positive rates
+
+    // Calculate approximate false positive rate based on Bloom filter parameters
+    // This is a rough approximation: fp_rate ≈ (1 - e^(-k*n/m))^k
+    // where k = hash functions, n = expected items, m = bits in filter
+
+    // For text indexes, we use a heuristic based on filter size and hash functions
+    if (filter_size_bytes >= 512 && num_hash_functions >= 4)
+    {
+        // Large filter with many hash functions -> very low FP rate -> use real suffixes
+        // approx_fp_rate = 0.001;
+        return SurfFilterParameters(true, 16, kReal, 0, 8);
+    }
+    else if (filter_size_bytes >= 256 && num_hash_functions >= 3)
+    {
+        // Medium-large filter -> low FP rate -> use hash suffixes
+        // approx_fp_rate = 0.01;
+        return SurfFilterParameters(true, 16, kHash, 8, 0);
+    }
+    else if (filter_size_bytes >= 128 && num_hash_functions >= 2)
+    {
+        // Medium filter -> medium FP rate -> use shorter hash suffixes
+        // approx_fp_rate = 0.025;
+        return SurfFilterParameters(true, 16, kHash, 4, 0);
+    }
+    else
+    {
+        // Small filter or few hash functions -> higher FP rate -> no suffixes
+        // approx_fp_rate = 0.05;
+        return SurfFilterParameters(true, 16, kNone, 0, 0);
+    }
+}
+
 MergeTreeIndexPtr surfFilterIndexTextCreator(const IndexDescription & index)
 {
     if (index.type == NgramTokenExtractor::getName2())
     {
         size_t n = index.arguments[0].safeGet<size_t>();
-        // Use reasonable SuRF defaults - user parameters were for Bloom filters
-        SurfFilterParameters params(
-            true, // include_dense
-            16, // sparse_dense_ratio
-            kNone, // suffix_type
-            0, // hash_suffix_len
-            0 // real_suffix_len
-        );
+        size_t filter_size_bytes = index.arguments[1].safeGet<size_t>();
+        size_t num_hash_functions = index.arguments[2].safeGet<size_t>();
+        size_t random_seed = index.arguments[3].safeGet<size_t>();
+
+
+        // Convert Bloom filter parameters to SuRF parameters
+        SurfFilterParameters params = convertBloomToSurfParameters(filter_size_bytes, num_hash_functions, random_seed);
 
         auto tokenizer = std::make_unique<NgramTokenExtractor>(n);
 
@@ -774,21 +827,20 @@ MergeTreeIndexPtr surfFilterIndexTextCreator(const IndexDescription & index)
     }
     if (index.type == DefaultTokenExtractor::getName2())
     {
-        // Use reasonable SuRF defaults - user parameters were for Bloom filters
-        SurfFilterParameters params(
-            true, // include_dense
-            16, // sparse_dense_ratio
-            kNone, // suffix_type
-            0, // hash_suffix_len
-            0 // real_suffix_len
-        );
+        size_t filter_size_bytes = index.arguments[0].safeGet<size_t>();
+        size_t num_hash_functions = index.arguments[1].safeGet<size_t>();
+        size_t random_seed = index.arguments[2].safeGet<size_t>();
+
+
+        // Convert Bloom filter parameters to SuRF parameters
+        SurfFilterParameters params = convertBloomToSurfParameters(filter_size_bytes, num_hash_functions, random_seed);
 
         auto tokenizer = std::make_unique<DefaultTokenExtractor>();
 
         return std::make_shared<MergeTreeIndexSurfFilterText>(index, params, std::move(tokenizer));
     }
 
-    throw Exception(ErrorCodes::LOGICAL_ERROR, "Unknown index type: {}", backQuote(index.name));
+    throw Exception(ErrorCodes::LOGICAL_ERROR, "Unknownnn index type: {}", backQuote(index.name));
 }
 
 void surfFilterIndexTextValidator(const IndexDescription & index, bool /*attach*/)
@@ -815,15 +867,19 @@ void surfFilterIndexTextValidator(const IndexDescription & index, bool /*attach*
                 "`LowCardinality(FixedString)`, `Array(String)` or `Array(FixedString)`");
     }
 
-    if (index.type == NgramTokenExtractor::getName())
+    if (index.type == NgramTokenExtractor::getName2())
     {
         if (index.arguments.size() != 4)
-            throw Exception(ErrorCodes::INCORRECT_QUERY, "`ngrambf` index must have exactly 4 arguments.");
+            throw Exception(
+                ErrorCodes::INCORRECT_QUERY,
+                "`ngramsf_v1` index must have exactly 4 arguments: n, filter_size_bytes, num_hash_functions, random_seed.");
     }
-    else if (index.type == DefaultTokenExtractor::getName())
+    else if (index.type == DefaultTokenExtractor::getName2())
     {
         if (index.arguments.size() != 3)
-            throw Exception(ErrorCodes::INCORRECT_QUERY, "`tokenbf` index must have exactly 3 arguments.");
+            throw Exception(
+                ErrorCodes::INCORRECT_QUERY,
+                "`tokensf_v1` index must have exactly 3 arguments: filter_size_bytes, num_hash_functions, random_seed.");
     }
     else
     {
@@ -834,18 +890,37 @@ void surfFilterIndexTextValidator(const IndexDescription & index, bool /*attach*
 
     for (const auto & arg : index.arguments)
         if (arg.getType() != Field::Types::UInt64)
-            throw Exception(ErrorCodes::BAD_ARGUMENTS, "All parameters to *bf_v1 index must be unsigned integers");
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "All parameters to *bf_v2 index must be unsigned integers");
 
-    /// Just validate - SuRF uses different parameters than Bloom filters
-    // The original parameters (filter_size, filter_hashes, seed) don't apply to SuRF
-    // but we still validate them for backward compatibility
-    SurfFilterParameters params(
-        true, // include_dense
-        16, // sparse_dense_ratio
-        kNone, // suffix_type
-        0, // hash_suffix_len
-        0 // real_suffix_len
-    );
+    // Validate parameter ranges for SuRF conversion
+    if (index.type == NgramTokenExtractor::getName2())
+    {
+        size_t n = index.arguments[0].safeGet<size_t>();
+        size_t filter_size_bytes = index.arguments[1].safeGet<size_t>();
+        size_t num_hash_functions = index.arguments[2].safeGet<size_t>();
+        // size_t random_seed = index.arguments[3].safeGet<size_t>(); // Not used in validation
+
+        if (n < 2 || n > 8)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Ngram size must be between 2 and 8, got {}", n);
+
+        if (filter_size_bytes < 64)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Filter size must be at least 64 bytes, got {}", filter_size_bytes);
+
+        if (num_hash_functions == 0 || num_hash_functions > 16)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Number of hash functions must be between 1 and 16, got {}", num_hash_functions);
+    }
+    else if (index.type == DefaultTokenExtractor::getName2())
+    {
+        size_t filter_size_bytes = index.arguments[0].safeGet<size_t>();
+        size_t num_hash_functions = index.arguments[1].safeGet<size_t>();
+        // size_t random_seed = index.arguments[2].safeGet<size_t>(); // Not used in validation
+
+        if (filter_size_bytes < 64)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Filter size must be at least 64 bytes, got {}", filter_size_bytes);
+
+        if (num_hash_functions == 0 || num_hash_functions > 16)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Number of hash functions must be between 1 and 16, got {}", num_hash_functions);
+    }
 }
 
 }

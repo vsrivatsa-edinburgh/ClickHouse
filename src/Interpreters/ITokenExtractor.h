@@ -197,7 +197,7 @@ struct NgramTokenExtractor final : public ITokenExtractorHelper<NgramTokenExtrac
     }
 
     static const char * getName() { return "ngrambf_v1"; }
-    static const char * getName2() { return "ngrambf_v2"; }
+    static const char * getName2() { return "ngramsf_v1"; }
     static const char * getExternalName() { return "ngram"; }
 
     std::vector<String> getTokens(const char * data, size_t length) const override;
@@ -221,7 +221,7 @@ private:
 struct DefaultTokenExtractor final : public ITokenExtractorHelper<DefaultTokenExtractor>
 {
     static const char * getName() { return "tokenbf_v1"; }
-    static const char * getName2() { return "tokenbf_v2"; }
+    static const char * getName2() { return "tokensf_v1"; }
     static const char * getExternalName() { return "default"; }
 
     bool nextInString(

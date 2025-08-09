@@ -1,0 +1,120 @@
+Map full text surf filter tokensf mapKeys
+Equals with existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+Equals with non existing key
+Equals with non existing key and default value
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with existing key
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key and default value
+Map fixed full text surf filter tokensf mapKeys
+Equals with existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+Equals with non existing key
+Equals with non existing key and default value
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with existing key
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key and default value
+Map full text surf filter tokensf mapValues
+Equals with existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+Equals with non existing key
+Equals with non existing key and default value
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with existing key
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key and default value
+Equals with existing value
+0	{'K0':'V0'}	{'K0':'V0'}
+Equals with non existing value
+Not equals with existing value
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing value
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Map fixed full text surf filter tokensf mapKeys
+Equals with existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+Equals with non existing key
+Equals with non existing key and default value
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with existing key
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key and default value
+Equals with existing value
+0	{'K0':'V0'}	{'K0':'V0'}
+Equals with non existing value
+Not equals with existing value
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing value
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Map full text surf filter ngramsf mapKeys
+Equals with existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+Equals with non existing key
+Equals with non existing key and default value
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with existing key
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key and default value
+Map fixed full text surf filter ngramsf mapKeys
+Equals with existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+Equals with non existing key
+Equals with non existing key and default value
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with existing key
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key and default value
+Map full text surf filter ngramsf mapValues
+Equals with existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+Equals with non existing key
+Equals with non existing key and default value
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with existing key
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key and default value
+Map fixed full text surf filter ngramsf mapKeys
+Equals with existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+Equals with non existing key
+Equals with non existing key and default value
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with existing key
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key
+0	{'K0':'V0'}	{'K0':'V0'}
+1	{'K1':'V1'}	{'K1':'V1'}
+Not equals with non existing key and default value
