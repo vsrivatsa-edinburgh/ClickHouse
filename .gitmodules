@@ -378,3 +378,6 @@
 [submodule "contrib/SuRF"]
 	path = contrib/SuRF
 	url = https://github.com/vsrivatsa-edinburgh/SuRF.git
+[submodule "contrib/grafite"]
+	path = contrib/grafite
+	url = https://github.com/vsrivatsa-edinburgh/grafite.git
