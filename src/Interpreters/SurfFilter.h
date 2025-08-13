@@ -101,6 +101,10 @@ public:
     /// Point lookup - returns true if key might exist (may have false positives)
     bool lookupKey(const std::string & key) const;
 
+    /// Check if this SuRF contains all tokens from another SuRF
+    /// For text indexes: returns true if all tokens in the query filter exist in this filter
+    bool contains(const std::vector<std::string> & tokens) const;
+
     // Range capabilities commented out for now - will be implemented later
     /*
     /// Range lookup - returns true if any key in range might exist
@@ -142,7 +146,6 @@ private:
 
     // Use actual SuRF implementation from contrib
     std::unique_ptr<surf::SuRF> surf_;
-    std::vector<std::string> incremental_keys_; // Keys accumulated for incremental construction
     bool incremental_mode_;
     bool finalized_;
 

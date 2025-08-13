@@ -117,6 +117,9 @@ private:
 
         /// For FUNCTION_EQUALS, FUNCTION_NOT_EQUALS
         std::unique_ptr<SurfFilter> surf_filter;
+        
+        /// Keys extracted from the query (for contains() method)
+        std::vector<std::string> keys;
 
         /// For FUNCTION_IN, FUNCTION_NOT_IN, FUNCTION_MULTI_SEARCH and FUNCTION_HAS_ANY
         std::vector<std::vector<SurfFilter>> set_surf_filters;

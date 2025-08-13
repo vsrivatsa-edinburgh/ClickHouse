@@ -81,29 +81,6 @@ MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(size_t index_co
         surf_filters[column] = std::make_shared<SurfFilter>(params);
 }
 
-MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(const std::vector<HashSet<UInt64>> & column_hashes_, double false_positive_probability)
-    : surf_filters(column_hashes_.size())
-{
-    if (column_hashes_.empty())
-        throw Exception(ErrorCodes::LOGICAL_ERROR, "Granule_index_blocks empty or total_rows is zero.");
-
-    size_t surf_filter_max_size = 0;
-    for (const auto & column_hash : column_hashes_)
-        surf_filter_max_size = std::max(surf_filter_max_size, column_hash.size());
-
-    // For compatibility, we still track total_rows, but now create SurfFilters with proper parameters
-    total_rows = surf_filter_max_size;
-
-    // Create SurfFilter with user-provided parameters
-    SurfFilterParameters params = getSurfParameters(false_positive_probability);
-
-    for (size_t column = 0, columns = column_hashes_.size(); column < columns; ++column)
-    {
-        surf_filters[column] = std::make_shared<SurfFilter>(params);
-        fillingSurfFilter(surf_filters[column], column_hashes_[column], false_positive_probability);
-    }
-}
-
 MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(const std::vector<std::set<std::string>> & column_keys_, double false_positive_probability)
     : surf_filters(column_keys_.size())
 {
@@ -170,38 +147,6 @@ void MergeTreeIndexGranuleSurfFilter::serializeBinary(WriteBuffer & ostr) const
     {
         surf_filter->serialize(ostr);
     }
-}
-
-void MergeTreeIndexGranuleSurfFilter::fillingSurfFilter(SurfFilterPtr & surf_filter, const HashSet<UInt64> & hashes, double false_positive_probability) const
-{
-    // For now, we'll initialize the SurfFilter for incremental insertion and add hash-based keys
-    // This is a temporary compatibility layer until we implement proper SuRF construction
-
-    // Convert hashes to string keys for SurfFilter
-    // This is a bridge implementation - ideally we'd have the actual keys, not just hashes
-    std::vector<std::string> keys;
-    keys.reserve(hashes.size());
-
-    for (const auto & hash_entry : hashes)
-    {
-        // Convert hash to string key (temporary solution)
-        // In a real implementation, we'd have access to the original keys
-        keys.push_back(std::to_string(hash_entry.getKey()));
-    }
-
-    // Sort keys as required by SuRF
-    std::sort(keys.begin(), keys.end());
-
-    // Initialize for incremental insertion and add keys
-    SurfFilterParameters params = getSurfParameters(false_positive_probability);
-    surf_filter->initializeForIncrementalInsertion(params);
-
-    for (const auto & key : keys)
-    {
-        surf_filter->insert(key);
-    }
-
-    surf_filter->finalize();
 }
 
 void MergeTreeIndexGranuleSurfFilter::fillingSurfFilterWithKeys(SurfFilterPtr & surf_filter, const std::set<std::string> & keys, double false_positive_probability) const

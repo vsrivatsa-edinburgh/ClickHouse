@@ -23,8 +23,6 @@ class MergeTreeIndexGranuleSurfFilter final : public IMergeTreeIndexGranule
 public:
     MergeTreeIndexGranuleSurfFilter(size_t index_columns_, double false_positive_probability = 0.025);
 
-    MergeTreeIndexGranuleSurfFilter(const std::vector<HashSet<UInt64>> & column_hashes, double false_positive_probability = 0.025);
-
     MergeTreeIndexGranuleSurfFilter(const std::vector<std::set<std::string>> & column_keys, double false_positive_probability = 0.025);
 
     bool empty() const override;
@@ -42,7 +40,6 @@ private:
     size_t total_rows = 0;
     std::vector<SurfFilterPtr> surf_filters;
 
-    void fillingSurfFilter(SurfFilterPtr & bf, const HashSet<UInt64> & hashes, double false_positive_probability) const;
     void fillingSurfFilterWithKeys(SurfFilterPtr & bf, const std::set<std::string> & keys, double false_positive_probability) const;
 };
 

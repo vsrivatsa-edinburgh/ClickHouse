@@ -1,5 +1,20 @@
 #include <Storages/MergeTree/MergeTreeIndexSurfFilterText.h>
 
+#include <Storages/MergeTree/MergeTreeIndexSurfFilterText.h>
+
+// SuRF-based Text Filter Index Implementation
+//
+// This implementation uses SuRF (Succinct Range Filter) for text index filtering.
+// The filtering logic is designed to eliminate granules that definitely cannot contain matches:
+//
+// 1. Empty query filter -> no search tokens -> no possible matches
+// 2. Empty granule filter -> no indexed tokens -> no possible matches
+// 3. Both non-empty -> potential match exists, forward to query processing
+//
+// This eliminates unnecessary work while ensuring no valid matches are missed.
+
+#include <Columns/ColumnArray.h>
+
 #include <Columns/ColumnArray.h>
 #include <Core/Defines.h>
 #include <DataTypes/DataTypeArray.h>
@@ -91,6 +106,12 @@ MergeTreeIndexAggregatorSurfFilterText::MergeTreeIndexAggregatorSurfFilterText(
 
 MergeTreeIndexGranulePtr MergeTreeIndexAggregatorSurfFilterText::getGranuleAndReset()
 {
+    // Finalize all SuRF filters in the current granule before returning it
+    for (auto & surf_filter : granule->surf_filters)
+    {
+        surf_filter.finalize();
+    }
+
     auto new_granule = std::make_shared<MergeTreeIndexGranuleSurfFilterText>(index_name, index_columns.size(), params);
     new_granule.swap(granule);
     return new_granule;
@@ -190,14 +211,11 @@ bool MergeTreeConditionSurfFilterText::alwaysUnknownOrTrue() const
 /// Keep in-sync with MergeTreeIndexConditionGin::mayBeTrueOnTranuleInPart
 bool MergeTreeConditionSurfFilterText::mayBeTrueOnGranule(MergeTreeIndexGranulePtr idx_granule) const
 {
-    LOG_TRACE(surf_text_logger, "mayBeTrueOnGranule called");
-
     std::shared_ptr<MergeTreeIndexGranuleSurfFilterText> granule
         = std::dynamic_pointer_cast<MergeTreeIndexGranuleSurfFilterText>(idx_granule);
     if (!granule)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "SurfFilter index condition got a granule with the wrong type.");
 
-    LOG_TRACE(surf_text_logger, "granule cast successful, processing RPN stack");
     std::vector<BoolMask> rpn_stack;
     for (const auto & element : rpn)
     {
@@ -209,9 +227,8 @@ bool MergeTreeConditionSurfFilterText::mayBeTrueOnGranule(MergeTreeIndexGranuleP
             element.function == RPNElement::FUNCTION_EQUALS || element.function == RPNElement::FUNCTION_NOT_EQUALS
             || element.function == RPNElement::FUNCTION_HAS)
         {
-            // TODO: Adapt this for SuRF - temporarily return true to avoid compilation errors
-            // The text-based index needs redesign to work with SuRF's key-based lookups
-            rpn_stack.emplace_back(true, true);
+            LOG_TRACE(surf_text_logger, "SurfFilter index condition: checking for {} keys", element.keys.size());
+            rpn_stack.emplace_back(granule->surf_filters[element.key_column].contains(element.keys), true);
 
             if (element.function == RPNElement::FUNCTION_NOT_EQUALS)
                 rpn_stack.back() = !rpn_stack.back();
@@ -222,12 +239,15 @@ bool MergeTreeConditionSurfFilterText::mayBeTrueOnGranule(MergeTreeIndexGranuleP
 
             for (size_t column = 0; column < element.set_key_position.size(); ++column)
             {
-                // const size_t key_idx = element.set_key_position[column];
+                const size_t key_idx = element.set_key_position[column];
+                if (key_idx >= granule->surf_filters.size())
+                    continue;
 
                 const auto & surf_filters = element.set_surf_filters[column];
                 for (size_t row = 0; row < surf_filters.size(); ++row)
-                    // TODO: Adapt this for SuRF - temporarily return true
-                    result[row] = result[row] && true; // granule->surf_filters[key_idx].contains(surf_filters[row]);
+                {
+                    result[row] = result[row] && granule->surf_filters[key_idx].contains(element.keys);
+                }
             }
 
             rpn_stack.emplace_back(std::find(std::cbegin(result), std::cend(result), true) != std::end(result), true);
@@ -243,8 +263,9 @@ bool MergeTreeConditionSurfFilterText::mayBeTrueOnGranule(MergeTreeIndexGranuleP
             const auto & surf_filters = element.set_surf_filters[0];
 
             for (size_t row = 0; row < surf_filters.size(); ++row)
-                // TODO: Adapt this for SuRF - temporarily return true
-                result[row] = result[row] && true; // granule->surf_filters[element.key_column].contains(surf_filters[row]);
+            {
+                result[row] = result[row] && granule->surf_filters[element.key_column].contains(element.keys);
+            }
 
             if (element.function == RPNElement::FUNCTION_HAS_ALL)
                 rpn_stack.emplace_back(std::find(std::cbegin(result), std::cend(result), false) == std::end(result), true);
@@ -261,16 +282,16 @@ bool MergeTreeConditionSurfFilterText::mayBeTrueOnGranule(MergeTreeIndexGranuleP
                 const auto & surf_filters = element.set_surf_filters[0];
 
                 for (size_t row = 0; row < surf_filters.size(); ++row)
-                    // TODO: Adapt this for SuRF - temporarily return true
-                    result[row] = result[row] && true; // granule->surf_filters[element.key_column].contains(surf_filters[row]);
+                {
+                    result[row] = result[row] && granule->surf_filters[element.key_column].contains(element.keys);
+                }
 
                 rpn_stack.emplace_back(std::find(std::cbegin(result), std::cend(result), true) != std::end(result), true);
             }
             else if (element.surf_filter)
             {
                 /// Required substrings
-                // TODO: Adapt this for SuRF - temporarily return true
-                rpn_stack.emplace_back(true, true); // granule->surf_filters[element.key_column].contains(*element.surf_filter), true);
+                rpn_stack.emplace_back(granule->surf_filters[element.key_column].contains(element.keys), true);
             }
         }
         else if (element.function == RPNElement::FUNCTION_NOT)
@@ -479,6 +500,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
             std::ranges::transform(value, value.begin(), [](const auto & c) { return static_cast<char>(std::tolower(c)); });
 
         token_extractor->stringToSurfFilter(value.data(), value.size(), *out.surf_filter);
+
+        // Extract keys from the search value for contains() method
+        out.keys.clear();
+        out.keys.push_back(value);
+
         return true;
     }
 
@@ -494,6 +520,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
             out.surf_filter = std::make_unique<SurfFilter>(params);
             auto & value = const_value.safeGet<String>();
             token_extractor->stringToSurfFilter(value.data(), value.size(), *out.surf_filter);
+
+            // Extract keys from the search value for contains() method
+            out.keys.clear();
+            out.keys.push_back(value);
+
             return true;
         }
         if (function_name == "mapContainsKeyLike")
@@ -503,6 +534,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
             out.surf_filter = std::make_unique<SurfFilter>(params);
             auto & value = const_value.safeGet<String>();
             token_extractor->stringLikeToSurfFilter(value.data(), value.size(), *out.surf_filter);
+
+            // Extract keys from the search value for contains() method
+            out.keys.clear();
+            out.keys.push_back(value);
+
             return true;
         }
         // When map_key_index is set, we shouldn't use ngram/token bf for other functions
@@ -518,6 +554,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
             out.surf_filter = std::make_unique<SurfFilter>(params);
             auto & value = const_value.safeGet<String>();
             token_extractor->stringToSurfFilter(value.data(), value.size(), *out.surf_filter);
+
+            // Extract keys from the search value for contains() method
+            out.keys.clear();
+            out.keys.push_back(value);
+
             return true;
         }
         if (function_name == "mapContainsValueLike")
@@ -527,6 +568,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
             out.surf_filter = std::make_unique<SurfFilter>(params);
             auto & value = const_value.safeGet<String>();
             token_extractor->stringLikeToSurfFilter(value.data(), value.size(), *out.surf_filter);
+
+            // Extract keys from the search value for contains() method
+            out.keys.clear();
+            out.keys.push_back(value);
+
             return true;
         }
         // When map_value_index is set, we shouldn't use ngram/token bf for other functions
@@ -540,6 +586,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
         out.surf_filter = std::make_unique<SurfFilter>(params);
         auto & value = const_value.safeGet<String>();
         token_extractor->stringToSurfFilter(value.data(), value.size(), *out.surf_filter);
+
+        // Extract keys from the search value for contains() method
+        out.keys.clear();
+        out.keys.push_back(value);
+
         return true;
     }
 
@@ -550,6 +601,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
         out.surf_filter = std::make_unique<SurfFilter>(params);
         const auto & value = const_value.safeGet<String>();
         token_extractor->stringToSurfFilter(value.data(), value.size(), *out.surf_filter);
+
+        // Extract keys from the search value for contains() method
+        out.keys.clear();
+        out.keys.push_back(value);
+
         return true;
     }
     if (function_name == "equals")
@@ -559,6 +615,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
         out.surf_filter = std::make_unique<SurfFilter>(params);
         const auto & value = const_value.safeGet<String>();
         token_extractor->stringToSurfFilter(value.data(), value.size(), *out.surf_filter);
+
+        // Extract keys from the search value for contains() method
+        out.keys.clear();
+        out.keys.push_back(value);
+
         return true;
     }
     if (function_name == "like")
@@ -568,6 +629,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
         out.surf_filter = std::make_unique<SurfFilter>(params);
         const auto & value = const_value.safeGet<String>();
         token_extractor->stringLikeToSurfFilter(value.data(), value.size(), *out.surf_filter);
+
+        // Extract keys from the search value for contains() method
+        out.keys.clear();
+        out.keys.push_back(value);
+
         return true;
     }
     if (function_name == "notLike")
@@ -577,6 +643,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
         out.surf_filter = std::make_unique<SurfFilter>(params);
         const auto & value = const_value.safeGet<String>();
         token_extractor->stringLikeToSurfFilter(value.data(), value.size(), *out.surf_filter);
+
+        // Extract keys from the search value for contains() method
+        out.keys.clear();
+        out.keys.push_back(value);
+
         return true;
     }
     if (function_name == "startsWith")
@@ -586,6 +657,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
         out.surf_filter = std::make_unique<SurfFilter>(params);
         const auto & value = const_value.safeGet<String>();
         token_extractor->substringToSurfFilter(value.data(), value.size(), *out.surf_filter, true, false);
+
+        // Extract keys from the search value for contains() method
+        out.keys.clear();
+        out.keys.push_back(value);
+
         return true;
     }
     if (function_name == "endsWith")
@@ -595,6 +671,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
         out.surf_filter = std::make_unique<SurfFilter>(params);
         const auto & value = const_value.safeGet<String>();
         token_extractor->substringToSurfFilter(value.data(), value.size(), *out.surf_filter, false, true);
+
+        // Extract keys from the search value for contains() method
+        out.keys.clear();
+        out.keys.push_back(value);
+
         return true;
     }
     if (function_name == "multiSearchAny" || function_name == "hasAny" || function_name == "hasAll")
@@ -657,7 +738,13 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
             out.set_surf_filters = std::move(surf_filters);
         }
         else
+        {
             token_extractor->substringToSurfFilter(required_substring.data(), required_substring.size(), *out.surf_filter, false, false);
+
+            // Extract keys from the search value for contains() method
+            out.keys.clear();
+            out.keys.push_back(required_substring);
+        }
 
         return true;
     }
