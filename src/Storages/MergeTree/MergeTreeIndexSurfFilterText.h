@@ -2,10 +2,10 @@
 
 #include <memory>
 
-#include <Storages/MergeTree/MergeTreeIndices.h>
-#include <Storages/MergeTree/KeyCondition.h>
-#include <Interpreters/SurfFilter.h>
 #include <Interpreters/ITokenExtractor.h>
+#include <Interpreters/SurfFilter.h>
+#include <Storages/MergeTree/KeyCondition.h>
+#include <Storages/MergeTree/MergeTreeIndices.h>
 
 
 namespace DB
@@ -13,10 +13,7 @@ namespace DB
 
 struct MergeTreeIndexGranuleSurfFilterText final : public IMergeTreeIndexGranule
 {
-    explicit MergeTreeIndexGranuleSurfFilterText(
-        const String & index_name_,
-        size_t columns_number,
-        const SurfFilterParameters & params_);
+    explicit MergeTreeIndexGranuleSurfFilterText(const String & index_name_, size_t columns_number, const SurfFilterParameters & params_);
 
     ~MergeTreeIndexGranuleSurfFilterText() override = default;
 
@@ -39,10 +36,7 @@ using MergeTreeIndexGranuleSurfFilterTextPtr = std::shared_ptr<MergeTreeIndexGra
 struct MergeTreeIndexAggregatorSurfFilterText final : IMergeTreeIndexAggregator
 {
     explicit MergeTreeIndexAggregatorSurfFilterText(
-        const Names & index_columns_,
-        const String & index_name_,
-        const SurfFilterParameters & params_,
-        TokenExtractorPtr token_extractor_);
+        const Names & index_columns_, const String & index_name_, const SurfFilterParameters & params_, TokenExtractorPtr token_extractor_);
 
     ~MergeTreeIndexAggregatorSurfFilterText() override = default;
 
@@ -57,6 +51,8 @@ struct MergeTreeIndexAggregatorSurfFilterText final : IMergeTreeIndexAggregator
     TokenExtractorPtr token_extractor;
 
     MergeTreeIndexGranuleSurfFilterTextPtr granule;
+
+    std::vector<std::vector<std::string>> collected_tokens;
 };
 
 
@@ -64,20 +60,25 @@ class MergeTreeConditionSurfFilterText final : public IMergeTreeIndexCondition
 {
 public:
     MergeTreeConditionSurfFilterText(
-            const ActionsDAG::Node * predicate,
-            ContextPtr context,
-            const Block & index_sample_block,
-            const SurfFilterParameters & params_,
-            TokenExtractorPtr token_extactor_);
+        const ActionsDAG::Node * predicate,
+        ContextPtr context,
+        const Block & index_sample_block,
+        const SurfFilterParameters & params_,
+        TokenExtractorPtr token_extactor_);
 
     ~MergeTreeConditionSurfFilterText() override = default;
 
     bool alwaysUnknownOrTrue() const override;
     bool mayBeTrueOnGranule(MergeTreeIndexGranulePtr idx_granule) const override;
+
 private:
     struct KeyTuplePositionMapping
     {
-        KeyTuplePositionMapping(size_t tuple_index_, size_t key_index_) : tuple_index(tuple_index_), key_index(key_index_) {}
+        KeyTuplePositionMapping(size_t tuple_index_, size_t key_index_)
+            : tuple_index(tuple_index_)
+            , key_index(key_index_)
+        {
+        }
 
         size_t tuple_index;
         size_t key_index;
@@ -108,8 +109,14 @@ private:
         };
 
         RPNElement( /// NOLINT
-                Function function_ = FUNCTION_UNKNOWN, size_t key_column_ = 0, std::unique_ptr<SurfFilter> && const_surf_filter_ = nullptr)
-                : function(function_), key_column(key_column_), surf_filter(std::move(const_surf_filter_)) {}
+            Function function_ = FUNCTION_UNKNOWN,
+            size_t key_column_ = 0,
+            std::unique_ptr<SurfFilter> && const_surf_filter_ = nullptr)
+            : function(function_)
+            , key_column(key_column_)
+            , surf_filter(std::move(const_surf_filter_))
+        {
+        }
 
         Function function = FUNCTION_UNKNOWN;
         /// For FUNCTION_EQUALS, FUNCTION_NOT_EQUALS, FUNCTION_MULTI_SEARCH and FUNCTION_HAS_ANY
@@ -117,7 +124,7 @@ private:
 
         /// For FUNCTION_EQUALS, FUNCTION_NOT_EQUALS
         std::unique_ptr<SurfFilter> surf_filter;
-        
+
         /// Keys extracted from the query (for contains() method)
         std::vector<std::string> keys;
 
@@ -156,20 +163,19 @@ class MergeTreeIndexSurfFilterText final : public IMergeTreeIndex
 {
 public:
     MergeTreeIndexSurfFilterText(
-        const IndexDescription & index_,
-        const SurfFilterParameters & params_,
-        std::unique_ptr<ITokenExtractor> && token_extractor_)
+        const IndexDescription & index_, const SurfFilterParameters & params_, std::unique_ptr<ITokenExtractor> && token_extractor_)
         : IMergeTreeIndex(index_)
         , params(params_)
-        , token_extractor(std::move(token_extractor_)) {}
+        , token_extractor(std::move(token_extractor_))
+    {
+    }
 
     ~MergeTreeIndexSurfFilterText() override = default;
 
     MergeTreeIndexGranulePtr createIndexGranule() const override;
     MergeTreeIndexAggregatorPtr createIndexAggregator(const MergeTreeWriterSettings & settings) const override;
 
-    MergeTreeIndexConditionPtr createIndexCondition(
-            const ActionsDAG::Node * predicate, ContextPtr context) const override;
+    MergeTreeIndexConditionPtr createIndexCondition(const ActionsDAG::Node * predicate, ContextPtr context) const override;
 
     SurfFilterParameters params;
     /// Function for selecting next token.

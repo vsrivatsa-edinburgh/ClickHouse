@@ -6,6 +6,10 @@
 #include <Interpreters/GinFilter.h>
 #include <Interpreters/SurfFilter.h>
 
+#include <algorithm>
+#include <string>
+#include <vector>
+
 
 namespace DB
 {
@@ -70,6 +74,14 @@ struct ITokenExtractor
 
     virtual void stringLikeToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const = 0;
 
+    /// Collect tokens to vector methods for sorted insertion
+    virtual void stringToTokens(const char * data, size_t length, std::vector<std::string> & tokens) const = 0;
+
+    virtual void stringPaddedToTokens(const char * data, size_t length, std::vector<std::string> & tokens) const
+    {
+        stringToTokens(data, length, tokens);
+    }
+
     /// Updates GIN filter from exact-match string filter value
     virtual void stringToGinFilter(const char * data, size_t length, GinFilter & gin_filter) const = 0;
 
@@ -128,31 +140,78 @@ class ITokenExtractorHelper : public ITokenExtractor
 
     void stringToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const override
     {
+        // Collect all tokens first
+        std::vector<std::string> tokens;
         size_t cur = 0;
         size_t token_start = 0;
         size_t token_len = 0;
 
         while (cur < length && static_cast<const Derived *>(this)->nextInString(data, length, &cur, &token_start, &token_len))
-            surf_filter.add(data + token_start, token_len);
+            tokens.emplace_back(data + token_start, token_len);
+
+        // Sort tokens for consistent insertion order and better SuRF performance
+        std::sort(tokens.begin(), tokens.end());
+
+        // Add sorted tokens to SuRF filter
+        for (const auto & token : tokens)
+            surf_filter.add(token.data(), token.size());
     }
 
     void stringPaddedToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const override
+    {
+        // Collect all tokens first
+        std::vector<std::string> tokens;
+        size_t cur = 0;
+        size_t token_start = 0;
+        size_t token_len = 0;
+
+        while (cur < length && static_cast<const Derived *>(this)->nextInStringPadded(data, length, &cur, &token_start, &token_len))
+            tokens.emplace_back(data + token_start, token_len);
+
+        // Sort tokens for consistent insertion order and better SuRF performance
+        std::sort(tokens.begin(), tokens.end());
+
+        // Add sorted tokens to SuRF filter
+        for (const auto & token : tokens)
+            surf_filter.add(token.data(), token.size());
+    }
+
+    void stringLikeToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const override
+    {
+        // Collect all tokens first
+        std::vector<std::string> tokens;
+        size_t cur = 0;
+        String token;
+
+        while (cur < length && static_cast<const Derived *>(this)->nextInStringLike(data, length, &cur, token))
+            tokens.push_back(std::move(token));
+
+        // Sort tokens for consistent insertion order and better SuRF performance
+        std::sort(tokens.begin(), tokens.end());
+
+        // Add sorted tokens to SuRF filter
+        for (const auto & sorted_token : tokens)
+            surf_filter.add(sorted_token.data(), sorted_token.size());
+    }
+
+    void stringToTokens(const char * data, size_t length, std::vector<std::string> & tokens) const override
+    {
+        size_t cur = 0;
+        size_t token_start = 0;
+        size_t token_len = 0;
+
+        while (cur < length && static_cast<const Derived *>(this)->nextInString(data, length, &cur, &token_start, &token_len))
+            tokens.emplace_back(data + token_start, token_len);
+    }
+
+    void stringPaddedToTokens(const char * data, size_t length, std::vector<std::string> & tokens) const override
     {
         size_t cur = 0;
         size_t token_start = 0;
         size_t token_len = 0;
 
         while (cur < length && static_cast<const Derived *>(this)->nextInStringPadded(data, length, &cur, &token_start, &token_len))
-            surf_filter.add(data + token_start, token_len);
-    }
-
-    void stringLikeToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter) const override
-    {
-        size_t cur = 0;
-        String token;
-
-        while (cur < length && static_cast<const Derived *>(this)->nextInStringLike(data, length, &cur, token))
-            surf_filter.add(token.data(), token.size());
+            tokens.emplace_back(data + token_start, token_len);
     }
 
     void stringToGinFilter(const char * data, size_t length, GinFilter & gin_filter) const override

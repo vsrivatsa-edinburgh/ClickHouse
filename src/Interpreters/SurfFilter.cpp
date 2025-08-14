@@ -135,17 +135,23 @@ bool SurfFilter::lookupKey(const std::string & key) const
 bool SurfFilter::contains(const std::vector<std::string> & tokens) const
 {
     if (tokens.empty())
+    {
         return true; // Empty query should match everything
+    }
 
     if (!surf_)
+    {
         return false; // No data stored
+    }
 
     // Check if all query tokens exist in this granule's SuRF
     for (std::vector<std::string>::const_iterator it = tokens.begin(); it != tokens.end(); ++it)
     {
         const std::string & token = *it;
         if (!lookupKey(token))
+        {
             return false; // This token doesn't exist in the granule
+        }
     }
     return true; // All tokens exist in the granule
 }
@@ -259,12 +265,6 @@ void SurfFilter::destroy()
 
 void SurfFilter::buildFromKeys(const std::vector<std::string> & keys)
 {
-    if (keys.empty())
-    {
-        finalized_ = false;
-        return;
-    }
-
     // Create SuRF with the specified parameters
     surf_ = std::make_unique<surf::SuRF>(
         keys,
@@ -275,7 +275,6 @@ void SurfFilter::buildFromKeys(const std::vector<std::string> & keys)
         params_.real_suffix_len);
 
     // Call finalize to optimize the LOUDS-dense structure
-    LOG_TRACE(surf_logger, "SurfFilter::buildFromKeys() calling finalize on SuRF with {} keys", keys.size());
     surf_->finalize();
 
     finalized_ = true;
@@ -323,18 +322,12 @@ void SurfFilter::add(const char * data, size_t len)
 
         if (!incremental_mode_)
         {
-            LOG_TRACE(surf_logger, "SurfFilter::add() - initializing for incremental insertion");
             // Initialize for incremental insertion if not already done
             initializeForIncrementalInsertion(params_);
         }
 
         // Add the token as a key
-        bool inserted = insert(token);
-        LOG_TRACE(surf_logger, "SurfFilter::add() - token '{}' inserted: {}", token, inserted);
-    }
-    else
-    {
-        LOG_TRACE(surf_logger, "SurfFilter::add() - skipping empty token (data: {}, len: {})", static_cast<const void *>(data), len);
+        insert(token);
     }
 }
 

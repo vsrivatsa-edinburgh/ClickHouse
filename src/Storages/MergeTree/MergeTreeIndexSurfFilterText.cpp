@@ -32,6 +32,7 @@
 #include <Common/OptimizedRegularExpression.h>
 #include <Common/quoteString.h>
 
+#include <algorithm>
 #include <iostream>
 #include <Poco/Logger.h>
 #include <Common/logger_useful.h>
@@ -101,22 +102,31 @@ MergeTreeIndexAggregatorSurfFilterText::MergeTreeIndexAggregatorSurfFilterText(
     , params(params_)
     , token_extractor(token_extractor_)
     , granule(std::make_shared<MergeTreeIndexGranuleSurfFilterText>(index_name, index_columns.size(), params))
+    , collected_tokens(index_columns.size())
 {
 }
 
 MergeTreeIndexGranulePtr MergeTreeIndexAggregatorSurfFilterText::getGranuleAndReset()
 {
-    // Finalize all SuRF filters in the current granule before returning it
-    for (auto & surf_filter : granule->surf_filters)
+    // Sort and add all collected tokens to SuRF filters before finalizing
+    for (size_t col = 0; col < collected_tokens.size(); ++col)
     {
-        surf_filter.finalize();
+        auto & tokens = collected_tokens[col];
+
+        // Sort tokens for consistent insertion order and better SuRF performance
+        std::sort(tokens.begin(), tokens.end());
+
+        // Build SuRF filter from all sorted tokens at once
+        granule->surf_filters[col] = SurfFilter(tokens, params);
     }
 
     auto new_granule = std::make_shared<MergeTreeIndexGranuleSurfFilterText>(index_name, index_columns.size(), params);
     new_granule.swap(granule);
+
+    for (auto & tokens : collected_tokens)
+        tokens.clear();
     return new_granule;
 }
-
 void MergeTreeIndexAggregatorSurfFilterText::update(const Block & block, size_t * pos, size_t limit)
 {
     if (*pos >= block.rows())
@@ -149,7 +159,7 @@ void MergeTreeIndexAggregatorSurfFilterText::update(const Block & block, size_t 
                 for (size_t row_num = 0; row_num < elements_size; ++row_num)
                 {
                     auto ref = column_key.getDataAt(element_start_row + row_num);
-                    token_extractor->stringPaddedToSurfFilter(ref.data, ref.size, granule->surf_filters[col]);
+                    token_extractor->stringPaddedToTokens(ref.data, ref.size, collected_tokens[col]);
                 }
 
                 current_position += 1;
@@ -160,7 +170,7 @@ void MergeTreeIndexAggregatorSurfFilterText::update(const Block & block, size_t 
             for (size_t i = 0; i < rows_read; ++i)
             {
                 auto ref = column->getDataAt(current_position + i);
-                token_extractor->stringPaddedToSurfFilter(ref.data, ref.size, granule->surf_filters[col]);
+                token_extractor->stringPaddedToTokens(ref.data, ref.size, collected_tokens[col]);
             }
         }
     }
@@ -227,7 +237,6 @@ bool MergeTreeConditionSurfFilterText::mayBeTrueOnGranule(MergeTreeIndexGranuleP
             element.function == RPNElement::FUNCTION_EQUALS || element.function == RPNElement::FUNCTION_NOT_EQUALS
             || element.function == RPNElement::FUNCTION_HAS)
         {
-            LOG_TRACE(surf_text_logger, "SurfFilter index condition: checking for {} keys", element.keys.size());
             rpn_stack.emplace_back(granule->surf_filters[element.key_column].contains(element.keys), true);
 
             if (element.function == RPNElement::FUNCTION_NOT_EQUALS)
@@ -950,7 +959,8 @@ void surfFilterIndexTextValidator(const IndexDescription & index, bool /*attach*
         if (!data_type.isString() && !data_type.isFixedString() && !data_type.isIPv6())
             throw Exception(
                 ErrorCodes::INCORRECT_QUERY,
-                "Ngram and token surf filter indexes can only be used with column types `String`, `FixedString`, `LowCardinality(String)`, "
+                "Ngram and token surf filter indexes can only be used with column types `String`, `FixedString`, "
+                "`LowCardinality(String)`, "
                 "`LowCardinality(FixedString)`, `Array(String)` or `Array(FixedString)`");
     }
 
