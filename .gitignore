@@ -15,6 +15,7 @@
 /tests/venv
 /obj-x86_64-linux-gnu/
 /store
+/user_files
 
 # logs
 *.log
