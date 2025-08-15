@@ -89,6 +89,17 @@ public:
     /// Keys must be provided in sorted order
     SurfFilter(const std::vector<std::string> & keys, const SurfFilterParameters & params);
 
+    /// Destructor - properly clean up SuRF memory
+    ~SurfFilter();
+
+    /// Copy constructor and assignment operator are deleted due to unique_ptr
+    SurfFilter(const SurfFilter&) = delete;
+    SurfFilter& operator=(const SurfFilter&) = delete;
+
+    /// Move constructor and assignment operator
+    SurfFilter(SurfFilter&&) = default;
+    SurfFilter& operator=(SurfFilter&&) = default;
+
     /// Initialize empty SuRF for incremental insertion
     void initializeForIncrementalInsertion(const SurfFilterParameters & params);
 

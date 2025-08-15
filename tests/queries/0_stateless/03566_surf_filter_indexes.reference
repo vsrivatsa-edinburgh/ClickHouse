@@ -1,0 +1,44 @@
+Inserted	1000
+Test 1: Basic search functionality
+1
+1
+Test 2: Extracting test data - using hardcoded common words
+Test 3: True positive ngram tests
+1
+1
+1
+1
+1
+Test 4: True positive token tests
+1
+1
+1
+1
+1
+Test 5: False positive ngram tests
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+Test 6: False positive token tests
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+Test 7: Index information
+Test 8: Edge case tests
+Test 9: Performance validation
+Test 10: Combined index usage
+All tests completed successfully!

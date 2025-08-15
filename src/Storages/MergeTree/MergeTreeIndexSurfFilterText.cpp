@@ -34,8 +34,6 @@
 
 #include <algorithm>
 #include <iostream>
-#include <Poco/Logger.h>
-#include <Common/logger_useful.h>
 
 
 namespace DB
@@ -46,8 +44,6 @@ namespace ErrorCodes
 extern const int LOGICAL_ERROR;
 extern const int INCORRECT_QUERY;
 }
-
-static LoggerPtr surf_text_logger = getLogger("MergeTreeIndexSurfFilterText");
 
 MergeTreeIndexGranuleSurfFilterText::MergeTreeIndexGranuleSurfFilterText(
     const String & index_name_, size_t columns_number, const SurfFilterParameters & params_)
@@ -123,8 +119,7 @@ MergeTreeIndexGranulePtr MergeTreeIndexAggregatorSurfFilterText::getGranuleAndRe
     auto new_granule = std::make_shared<MergeTreeIndexGranuleSurfFilterText>(index_name, index_columns.size(), params);
     new_granule.swap(granule);
 
-    for (auto & tokens : collected_tokens)
-        tokens.clear();
+    collected_tokens.clear();
     return new_granule;
 }
 void MergeTreeIndexAggregatorSurfFilterText::update(const Block & block, size_t * pos, size_t limit)
@@ -237,7 +232,18 @@ bool MergeTreeConditionSurfFilterText::mayBeTrueOnGranule(MergeTreeIndexGranuleP
             element.function == RPNElement::FUNCTION_EQUALS || element.function == RPNElement::FUNCTION_NOT_EQUALS
             || element.function == RPNElement::FUNCTION_HAS)
         {
-            rpn_stack.emplace_back(granule->surf_filters[element.key_column].contains(element.keys), true);
+            // Extract tokens from the query string using the same tokenizer
+            // For EQUALS/NOT_EQUALS/HAS functions, there should be exactly one key
+            if (element.keys.empty())
+            {
+                rpn_stack.emplace_back(true, true); // Cannot filter on empty key set
+                continue;
+            }
+
+            const auto & query_string = element.keys[0]; // Single-value functions use only first key
+            std::vector<std::string> query_tokens = token_extractor->getTokens(query_string.data(), query_string.size());
+
+            rpn_stack.emplace_back(granule->surf_filters[element.key_column].contains(query_tokens), true);
 
             if (element.function == RPNElement::FUNCTION_NOT_EQUALS)
                 rpn_stack.back() = !rpn_stack.back();
@@ -255,7 +261,14 @@ bool MergeTreeConditionSurfFilterText::mayBeTrueOnGranule(MergeTreeIndexGranuleP
                 const auto & surf_filters = element.set_surf_filters[column];
                 for (size_t row = 0; row < surf_filters.size(); ++row)
                 {
-                    result[row] = result[row] && granule->surf_filters[key_idx].contains(element.keys);
+                    // Extract tokens from the query string for this row
+                    std::vector<std::string> query_tokens;
+                    if (row < element.keys.size())
+                    {
+                        const auto & query_string = element.keys[row];
+                        query_tokens = token_extractor->getTokens(query_string.data(), query_string.size());
+                    }
+                    result[row] = result[row] && granule->surf_filters[key_idx].contains(query_tokens);
                 }
             }
 
@@ -267,13 +280,27 @@ bool MergeTreeConditionSurfFilterText::mayBeTrueOnGranule(MergeTreeIndexGranuleP
             element.function == RPNElement::FUNCTION_MULTI_SEARCH || element.function == RPNElement::FUNCTION_HAS_ANY
             || element.function == RPNElement::FUNCTION_HAS_ALL)
         {
-            std::vector<bool> result(element.set_surf_filters.back().size(), true);
+            std::vector<bool> result;
 
-            const auto & surf_filters = element.set_surf_filters[0];
-
-            for (size_t row = 0; row < surf_filters.size(); ++row)
+            // Process each search string stored in keys
+            for (const auto & search_string : element.keys)
             {
-                result[row] = result[row] && granule->surf_filters[element.key_column].contains(element.keys);
+                // Extract tokens from the search string
+                std::vector<std::string> query_tokens;
+                if (element.function == RPNElement::FUNCTION_MULTI_SEARCH)
+                {
+                    // For multiSearchAny, use substring tokenization (partial matches)
+                    query_tokens = token_extractor->getTokens(search_string.data(), search_string.size());
+                }
+                else
+                {
+                    // For hasAny/hasAll, use full string tokenization
+                    query_tokens = token_extractor->getTokens(search_string.data(), search_string.size());
+                }
+
+                // Check if the granule contains all tokens from this search string
+                bool match = granule->surf_filters[element.key_column].contains(query_tokens);
+                result.push_back(match);
             }
 
             if (element.function == RPNElement::FUNCTION_HAS_ALL)
@@ -283,24 +310,31 @@ bool MergeTreeConditionSurfFilterText::mayBeTrueOnGranule(MergeTreeIndexGranuleP
         }
         else if (element.function == RPNElement::FUNCTION_MATCH)
         {
-            if (!element.set_surf_filters.empty())
+            // For FUNCTION_MATCH, use the stored keys and extract tokens during query processing
+            if (!element.keys.empty())
             {
-                /// Alternative substrings
-                std::vector<bool> result(element.set_surf_filters.back().size(), true);
+                bool any_match = false;
 
-                const auto & surf_filters = element.set_surf_filters[0];
-
-                for (size_t row = 0; row < surf_filters.size(); ++row)
+                // Check each alternative/required substring
+                for (const auto & search_string : element.keys)
                 {
-                    result[row] = result[row] && granule->surf_filters[element.key_column].contains(element.keys);
+                    // Extract tokens from the search string
+                    std::vector<std::string> query_tokens = token_extractor->getTokens(search_string.data(), search_string.size());
+
+                    // Check if the granule contains all tokens from this search string
+                    if (granule->surf_filters[element.key_column].contains(query_tokens))
+                    {
+                        any_match = true;
+                        break; // Found a matching alternative
+                    }
                 }
 
-                rpn_stack.emplace_back(std::find(std::cbegin(result), std::cend(result), true) != std::end(result), true);
+                rpn_stack.emplace_back(any_match, true);
             }
-            else if (element.surf_filter)
+            else
             {
-                /// Required substrings
-                rpn_stack.emplace_back(granule->surf_filters[element.key_column].contains(element.keys), true);
+                // No search strings - should not happen, but be safe
+                rpn_stack.emplace_back(true, true);
             }
         }
         else if (element.function == RPNElement::FUNCTION_NOT)
@@ -502,13 +536,11 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
     {
         out.key_column = is_case_insensitive_scenario ? *lowercase_key_index : *key_index;
         out.function = RPNElement::FUNCTION_EQUALS;
-        out.surf_filter = std::make_unique<SurfFilter>(params);
 
         auto value = const_value.safeGet<String>();
         if (is_case_insensitive_scenario)
             std::ranges::transform(value, value.begin(), [](const auto & c) { return static_cast<char>(std::tolower(c)); });
 
-        token_extractor->stringToSurfFilter(value.data(), value.size(), *out.surf_filter);
 
         // Extract keys from the search value for contains() method
         out.keys.clear();
@@ -526,9 +558,7 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
         {
             out.key_column = *key_index;
             out.function = RPNElement::FUNCTION_HAS;
-            out.surf_filter = std::make_unique<SurfFilter>(params);
             auto & value = const_value.safeGet<String>();
-            token_extractor->stringToSurfFilter(value.data(), value.size(), *out.surf_filter);
 
             // Extract keys from the search value for contains() method
             out.keys.clear();
@@ -540,9 +570,7 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
         {
             out.key_column = *key_index;
             out.function = RPNElement::FUNCTION_HAS;
-            out.surf_filter = std::make_unique<SurfFilter>(params);
             auto & value = const_value.safeGet<String>();
-            token_extractor->stringLikeToSurfFilter(value.data(), value.size(), *out.surf_filter);
 
             // Extract keys from the search value for contains() method
             out.keys.clear();
@@ -560,9 +588,8 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
         {
             out.key_column = *map_value_index;
             out.function = RPNElement::FUNCTION_HAS;
-            out.surf_filter = std::make_unique<SurfFilter>(params);
+
             auto & value = const_value.safeGet<String>();
-            token_extractor->stringToSurfFilter(value.data(), value.size(), *out.surf_filter);
 
             // Extract keys from the search value for contains() method
             out.keys.clear();
@@ -574,9 +601,7 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
         {
             out.key_column = *map_value_index;
             out.function = RPNElement::FUNCTION_HAS;
-            out.surf_filter = std::make_unique<SurfFilter>(params);
             auto & value = const_value.safeGet<String>();
-            token_extractor->stringLikeToSurfFilter(value.data(), value.size(), *out.surf_filter);
 
             // Extract keys from the search value for contains() method
             out.keys.clear();
@@ -592,9 +617,7 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
     {
         out.key_column = *key_index;
         out.function = RPNElement::FUNCTION_HAS;
-        out.surf_filter = std::make_unique<SurfFilter>(params);
         auto & value = const_value.safeGet<String>();
-        token_extractor->stringToSurfFilter(value.data(), value.size(), *out.surf_filter);
 
         // Extract keys from the search value for contains() method
         out.keys.clear();
@@ -607,9 +630,7 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
     {
         out.key_column = *key_index;
         out.function = RPNElement::FUNCTION_NOT_EQUALS;
-        out.surf_filter = std::make_unique<SurfFilter>(params);
         const auto & value = const_value.safeGet<String>();
-        token_extractor->stringToSurfFilter(value.data(), value.size(), *out.surf_filter);
 
         // Extract keys from the search value for contains() method
         out.keys.clear();
@@ -621,9 +642,7 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
     {
         out.key_column = *key_index;
         out.function = RPNElement::FUNCTION_EQUALS;
-        out.surf_filter = std::make_unique<SurfFilter>(params);
         const auto & value = const_value.safeGet<String>();
-        token_extractor->stringToSurfFilter(value.data(), value.size(), *out.surf_filter);
 
         // Extract keys from the search value for contains() method
         out.keys.clear();
@@ -694,34 +713,23 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
             : function_name == "hasAny"                  ? RPNElement::FUNCTION_HAS_ANY
                                                          : RPNElement::FUNCTION_HAS_ALL;
 
-        /// 2d vector is not needed here but is used because already exists for FUNCTION_IN
-        std::vector<std::vector<SurfFilter>> surf_filters;
-        surf_filters.emplace_back();
+        // Store the search strings as keys for token extraction during query processing
+        out.keys.clear();
         for (const auto & element : const_value.safeGet<Array>())
         {
             if (element.getType() != Field::Types::String)
                 return false;
 
-            surf_filters.back().emplace_back(params);
             const auto & value = element.safeGet<String>();
-
-            if (function_name == "multiSearchAny")
-            {
-                token_extractor->substringToSurfFilter(value.data(), value.size(), surf_filters.back().back(), false, false);
-            }
-            else
-            {
-                token_extractor->stringToSurfFilter(value.data(), value.size(), surf_filters.back().back());
-            }
+            out.keys.push_back(value);
         }
-        out.set_surf_filters = std::move(surf_filters);
         return true;
     }
     if (function_name == "match")
     {
         out.key_column = *key_index;
         out.function = RPNElement::FUNCTION_MATCH;
-        out.surf_filter = std::make_unique<SurfFilter>(params);
+        // Don't create SuRF filter during condition building - we'll use getTokens() during query processing
 
         auto & value = const_value.safeGet<String>();
         String required_substring;
@@ -733,24 +741,19 @@ bool MergeTreeConditionSurfFilterText::traverseTreeEquals(
         if (required_substring.empty() && alternatives.empty())
             return false;
 
-        /// out.set_surf_filters means alternatives exist
-        /// out.surf_filter means required_substring exists
+        /// Store the search strings as keys for token extraction during query processing
         if (!alternatives.empty())
         {
-            std::vector<std::vector<SurfFilter>> surf_filters;
-            surf_filters.emplace_back();
+            // Store alternatives as keys
+            out.keys.clear();
             for (const auto & alternative : alternatives)
             {
-                surf_filters.back().emplace_back(params);
-                token_extractor->substringToSurfFilter(alternative.data(), alternative.size(), surf_filters.back().back(), false, false);
+                out.keys.push_back(alternative);
             }
-            out.set_surf_filters = std::move(surf_filters);
         }
         else
         {
-            token_extractor->substringToSurfFilter(required_substring.data(), required_substring.size(), *out.surf_filter, false, false);
-
-            // Extract keys from the search value for contains() method
+            // Store required substring as key
             out.keys.clear();
             out.keys.push_back(required_substring);
         }
@@ -878,29 +881,35 @@ convertBloomToSurfParameters(size_t filter_size_bytes, size_t num_hash_functions
     // where k = hash functions, n = expected items, m = bits in filter
 
     // For text indexes, we use a heuristic based on filter size and hash functions
-    if (filter_size_bytes >= 512 && num_hash_functions >= 4)
+    if (filter_size_bytes >= 1024 && num_hash_functions >= 5)
+    {
+        // Largest filter with many hash functions -> very very low FP rate -> use real suffixes
+        // approx_fp_rate = 0.001;
+        return SurfFilterParameters(true, 64, kReal, 0, 8);
+    }
+    else if (filter_size_bytes >= 512 && num_hash_functions >= 4)
     {
         // Large filter with many hash functions -> very low FP rate -> use real suffixes
         // approx_fp_rate = 0.001;
-        return SurfFilterParameters(true, 16, kReal, 0, 8);
+        return SurfFilterParameters(true, 32, kReal, 0, 4);
     }
     else if (filter_size_bytes >= 256 && num_hash_functions >= 3)
     {
         // Medium-large filter -> low FP rate -> use hash suffixes
         // approx_fp_rate = 0.01;
-        return SurfFilterParameters(true, 16, kHash, 8, 0);
+        return SurfFilterParameters(true, 16, kHash, 4, 0);
     }
     else if (filter_size_bytes >= 128 && num_hash_functions >= 2)
     {
         // Medium filter -> medium FP rate -> use shorter hash suffixes
         // approx_fp_rate = 0.025;
-        return SurfFilterParameters(true, 16, kHash, 4, 0);
+        return SurfFilterParameters(true, 8, kHash, 2, 0);
     }
     else
     {
         // Small filter or few hash functions -> higher FP rate -> no suffixes
         // approx_fp_rate = 0.05;
-        return SurfFilterParameters(true, 16, kNone, 0, 0);
+        return SurfFilterParameters(true, 8, kNone, 0, 0);
     }
 }
 

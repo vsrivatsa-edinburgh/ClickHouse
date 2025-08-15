@@ -4,17 +4,18 @@
 
 #include <Common/StringUtils.h>
 #include <Common/UTF8Helpers.h>
+#include <Common/logger_useful.h>
 
 #if defined(__SSE2__)
-#  include <emmintrin.h>
-#  if defined(__SSE4_2__)
-#    include <nmmintrin.h>
-#  endif
+#    include <emmintrin.h>
+#    if defined(__SSE4_2__)
+#        include <nmmintrin.h>
+#    endif
 #endif
 
 namespace ErrorCodes
 {
-    extern const int NOT_IMPLEMENTED;
+extern const int NOT_IMPLEMENTED;
 }
 
 namespace DB
@@ -37,12 +38,15 @@ std::vector<String> ITokenExtractor::getTokens(const char * data, size_t length)
 std::vector<String> NgramTokenExtractor::getTokens(const char * data, size_t length) const
 {
     if (length < n)
-        return std::vector<String>{String(data, length)};
+    {
+        return {};
+    }
 
     return ITokenExtractor::getTokens(data, length);
 }
 
-bool NgramTokenExtractor::nextInString(const char * data, size_t length, size_t * __restrict pos, size_t * __restrict token_start, size_t * __restrict token_length) const
+bool NgramTokenExtractor::nextInString(
+    const char * data, size_t length, size_t * __restrict pos, size_t * __restrict token_start, size_t * __restrict token_length) const
 {
     *token_start = *pos;
     *token_length = 0;
@@ -104,7 +108,8 @@ bool NgramTokenExtractor::nextInStringLike(const char * data, size_t length, siz
     return false;
 }
 
-bool DefaultTokenExtractor::nextInString(const char * data, size_t length, size_t * __restrict pos, size_t * __restrict token_start, size_t * __restrict token_length) const
+bool DefaultTokenExtractor::nextInString(
+    const char * data, size_t length, size_t * __restrict pos, size_t * __restrict token_start, size_t * __restrict token_length) const
 {
     *token_start = *pos;
     *token_length = 0;
@@ -129,7 +134,8 @@ bool DefaultTokenExtractor::nextInString(const char * data, size_t length, size_
     return *token_length > 0;
 }
 
-bool DefaultTokenExtractor::nextInStringPadded(const char * data, size_t length, size_t * __restrict pos, size_t * __restrict token_start, size_t * __restrict token_length) const
+bool DefaultTokenExtractor::nextInStringPadded(
+    const char * data, size_t length, size_t * __restrict pos, size_t * __restrict token_start, size_t * __restrict token_length) const
 {
     *token_start = *pos;
     *token_length = 0;
@@ -141,31 +147,32 @@ bool DefaultTokenExtractor::nextInStringPadded(const char * data, size_t length,
         const __m128i haystack = _mm_loadu_si128(reinterpret_cast<const __m128i *>(data + *pos));
         const size_t haystack_length = 16;
 
-#if defined(__SSE4_2__)
+#    if defined(__SSE4_2__)
         // With the help of https://www.strchr.com/strcmp_and_strlen_using_sse_4.2
-        const auto alnum_chars_ranges = _mm_set_epi8(0, 0, 0, 0, 0, 0, 0, 0,
-                '\xFF', '\x80', 'z', 'a', 'Z', 'A', '9', '0');
+        const auto alnum_chars_ranges = _mm_set_epi8(0, 0, 0, 0, 0, 0, 0, 0, '\xFF', '\x80', 'z', 'a', 'Z', 'A', '9', '0');
         // Every bit represents if `haystack` character is in the ranges (1) or not (0)
         const unsigned result_bitmask = _mm_cvtsi128_si32(_mm_cmpestrm(alnum_chars_ranges, 8, haystack, haystack_length, _SIDD_CMP_RANGES));
-#else
+#    else
         // NOTE: -1 and +1 required since SSE2 has no `>=` and `<=` instructions on packed 8-bit integers (epi8).
-        const auto number_begin =      _mm_set1_epi8('0' - 1);
-        const auto number_end =        _mm_set1_epi8('9' + 1);
+        const auto number_begin = _mm_set1_epi8('0' - 1);
+        const auto number_end = _mm_set1_epi8('9' + 1);
         const auto alpha_lower_begin = _mm_set1_epi8('a' - 1);
-        const auto alpha_lower_end =   _mm_set1_epi8('z' + 1);
+        const auto alpha_lower_end = _mm_set1_epi8('z' + 1);
         const auto alpha_upper_begin = _mm_set1_epi8('A' - 1);
-        const auto alpha_upper_end =   _mm_set1_epi8('Z' + 1);
-        const auto zero =              _mm_set1_epi8(0);
+        const auto alpha_upper_end = _mm_set1_epi8('Z' + 1);
+        const auto zero = _mm_set1_epi8(0);
 
         // every bit represents if `haystack` character `c` satisfies condition:
         // (c < 0) || (c > '0' - 1 && c < '9' + 1) || (c > 'a' - 1 && c < 'z' + 1) || (c > 'A' - 1 && c < 'Z' + 1)
         // < 0 since _mm_cmplt_epi8 threats chars as SIGNED, and so all chars > 0x80 are negative.
-        const unsigned result_bitmask = _mm_movemask_epi8(_mm_or_si128(_mm_or_si128(_mm_or_si128(
-                _mm_cmplt_epi8(haystack, zero),
-                _mm_and_si128(_mm_cmpgt_epi8(haystack, number_begin),      _mm_cmplt_epi8(haystack, number_end))),
+        const unsigned result_bitmask = _mm_movemask_epi8(_mm_or_si128(
+            _mm_or_si128(
+                _mm_or_si128(
+                    _mm_cmplt_epi8(haystack, zero),
+                    _mm_and_si128(_mm_cmpgt_epi8(haystack, number_begin), _mm_cmplt_epi8(haystack, number_end))),
                 _mm_and_si128(_mm_cmpgt_epi8(haystack, alpha_lower_begin), _mm_cmplt_epi8(haystack, alpha_lower_end))),
-                _mm_and_si128(_mm_cmpgt_epi8(haystack, alpha_upper_begin), _mm_cmplt_epi8(haystack, alpha_upper_end))));
-#endif
+            _mm_and_si128(_mm_cmpgt_epi8(haystack, alpha_upper_begin), _mm_cmplt_epi8(haystack, alpha_upper_end))));
+#    endif
         if (result_bitmask == 0)
         {
             if (*token_length != 0)
@@ -263,7 +270,8 @@ bool DefaultTokenExtractor::nextInStringLike(const char * data, size_t length, s
     return !bad_token && !token.empty();
 }
 
-void DefaultTokenExtractor::substringToBloomFilter(const char * data, size_t length, BloomFilter & bloom_filter, bool is_prefix, bool is_suffix) const
+void DefaultTokenExtractor::substringToBloomFilter(
+    const char * data, size_t length, BloomFilter & bloom_filter, bool is_prefix, bool is_suffix) const
 {
     size_t cur = 0;
     size_t token_start = 0;
@@ -277,7 +285,8 @@ void DefaultTokenExtractor::substringToBloomFilter(const char * data, size_t len
             bloom_filter.add(data + token_start, token_len);
 }
 
-void DefaultTokenExtractor::substringToGinFilter(const char * data, size_t length, GinFilter & gin_filter, bool is_prefix, bool is_suffix) const
+void DefaultTokenExtractor::substringToGinFilter(
+    const char * data, size_t length, GinFilter & gin_filter, bool is_prefix, bool is_suffix) const
 {
     gin_filter.setQueryString(data, length);
 
@@ -293,7 +302,8 @@ void DefaultTokenExtractor::substringToGinFilter(const char * data, size_t lengt
             gin_filter.addTerm(data + token_start, token_len);
 }
 
-void DefaultTokenExtractor::substringToSurfFilter(const char * data, size_t length, SurfFilter & surf_filter, bool is_prefix, bool is_suffix) const
+void DefaultTokenExtractor::substringToSurfFilter(
+    const char * data, size_t length, SurfFilter & surf_filter, bool is_prefix, bool is_suffix) const
 {
     size_t cur = 0;
     size_t token_start = 0;
@@ -358,7 +368,8 @@ bool SplitTokenExtractor::nextInString(const char * data, size_t length, size_t 
     return true;
 }
 
-bool SplitTokenExtractor::nextInStringLike(const char * /*data*/, size_t /*length*/, size_t * /*token_start*/, String & /*token_length*/) const
+bool SplitTokenExtractor::nextInStringLike(
+    const char * /*data*/, size_t /*length*/, size_t * /*token_start*/, String & /*token_length*/) const
 {
     throw Exception(ErrorCodes::NOT_IMPLEMENTED, "StringTokenExtractor::nextInStringLike is not implemented");
 }
@@ -380,7 +391,8 @@ bool NoOpTokenExtractor::nextInString(const char * /*data*/, size_t length, size
     return false;
 }
 
-bool NoOpTokenExtractor::nextInStringLike(const char * /*data*/, size_t /*length*/, size_t * /*token_start*/, String & /*token_length*/) const
+bool NoOpTokenExtractor::nextInStringLike(
+    const char * /*data*/, size_t /*length*/, size_t * /*token_start*/, String & /*token_length*/) const
 {
     throw Exception(ErrorCodes::NOT_IMPLEMENTED, "NoOpTokenExtractor::nextInStringLike is not implemented");
 }

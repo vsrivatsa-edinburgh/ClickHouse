@@ -147,7 +147,10 @@ class ITokenExtractorHelper : public ITokenExtractor
         size_t token_len = 0;
 
         while (cur < length && static_cast<const Derived *>(this)->nextInString(data, length, &cur, &token_start, &token_len))
-            tokens.emplace_back(data + token_start, token_len);
+        {
+            std::string token(data + token_start, token_len);
+            tokens.emplace_back(token);
+        }
 
         // Sort tokens for consistent insertion order and better SuRF performance
         std::sort(tokens.begin(), tokens.end());
