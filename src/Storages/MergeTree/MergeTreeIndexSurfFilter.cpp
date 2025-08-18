@@ -58,12 +58,12 @@ static SurfFilterParameters getSurfParameters(int variant)
         // Use shorter hash suffixes
         return SurfFilterParameters(true, 16, kHash, 8, 0);
     }
-    else if (variant == 2) // High FP rate (0.01)
+    else if (variant == 2) // High FP rate (0.025)
     {
         // Use real suffixes for better performance
         return SurfFilterParameters(true, 16, kReal, 0, 8);
     }
-    else // Very high FP rate (> 0.025)
+    else // Very high FP rate (> 0.05)
     {
         // No suffixes for maximum speed
         return SurfFilterParameters(true, 16, kNone, 0, 0);
@@ -193,6 +193,49 @@ bool keyMatchesFilter(const SurfFilterPtr & surf_filter, const std::string & key
     return surf_filter->lookupKey(key);
 }
 
+bool keyMatchesRangeFilter(
+    const SurfFilterPtr & surf_filter, const std::string & key, MergeTreeIndexConditionSurfFilter::RPNElement::Function function)
+{
+    // Use concrete bounds instead of empty strings for better compatibility
+    // For numeric data, use reasonable min/max bounds that cover typical ranges
+    const std::string MIN_BOUND = ""; // Int32 min
+    const std::string MAX_BOUND = "\uffff"; // UInt32 max as upper bound
+
+    LOG_TRACE(&Poco::Logger::get("SurfFilter"), "keyMatchesRangeFilter called: key='{}', function={}", key, static_cast<int>(function));
+
+    bool result = false;
+    // For range operations, we use SuRF's range query capabilities
+    switch (function)
+    {
+        case MergeTreeIndexConditionSurfFilter::RPNElement::FUNCTION_GREATER:
+            // x > key: Look for anything in range (key, MAX_BOUND]
+            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "FUNCTION_GREATER: lookupRange('{}', false, '{}', true)", key, MAX_BOUND);
+            result = surf_filter->lookupRange(key, false, MAX_BOUND, true);
+            break;
+        case MergeTreeIndexConditionSurfFilter::RPNElement::FUNCTION_GREATER_OR_EQUALS:
+            // x >= key: Look for anything in range [key, MAX_BOUND]
+            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "FUNCTION_GREATER_OR_EQUALS: lookupRange('{}', true, '{}', true)", key, MAX_BOUND);
+            result = surf_filter->lookupRange(key, true, MAX_BOUND, true);
+            break;
+        case MergeTreeIndexConditionSurfFilter::RPNElement::FUNCTION_LESS:
+            // x < key: Look for anything in range [MIN_BOUND, key)
+            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "FUNCTION_LESS: lookupRange('{}', true, '{}', false)", MIN_BOUND, key);
+            result = surf_filter->lookupRange(MIN_BOUND, true, key, false);
+            break;
+        case MergeTreeIndexConditionSurfFilter::RPNElement::FUNCTION_LESS_OR_EQUALS:
+            // x <= key: Look for anything in range [MIN_BOUND, key]
+            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "FUNCTION_LESS_OR_EQUALS: lookupRange('{}', true, '{}', true)", MIN_BOUND, key);
+            result = surf_filter->lookupRange(MIN_BOUND, true, key, true);
+            break;
+        default:
+            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Unknown function: {}", static_cast<int>(function));
+            result = false;
+    }
+
+    LOG_TRACE(&Poco::Logger::get("SurfFilter"), "keyMatchesRangeFilter result: {}", result);
+    return result;
+}
+
 // bool maybeTrueOnSurfFilterWithKeys(const IColumn * column, const SurfFilterPtr & surf_filter, const DataTypePtr & data_type, bool match_all)
 // {
 //     const auto * const_column = typeid_cast<const ColumnConst *>(column);
@@ -254,35 +297,26 @@ std::string extractKeyFromField(const Field & field, const DataTypePtr & data_ty
     if (which.isString() || which.isFixedString())
         return field.safeGet<String>();
 
-    if (which.isUInt64())
+    // Use plain string format for all numeric types to match keyWithField
+    if (which.isUInt8() || which.isUInt16() || which.isUInt32() || which.isUInt64() || which.isUInt128() || which.isUInt256())
     {
-        UInt64 value = field.safeGet<UInt64>();
-        // Convert to big-endian for proper string sorting
-        UInt64 big_endian_value;
-        unalignedStoreBigEndian<UInt64>(&big_endian_value, value);
-        return std::string(reinterpret_cast<const char *>(&big_endian_value), sizeof(big_endian_value));
+        return toString(field.safeGet<UInt64>());
     }
-
-    if (which.isUInt32())
+    if (which.isInt8() || which.isInt16() || which.isInt32() || which.isInt64() || which.isInt128() || which.isInt256())
     {
-        UInt32 value = field.safeGet<UInt32>();
-        UInt32 big_endian_value;
-        unalignedStoreBigEndian<UInt32>(&big_endian_value, value);
-        return std::string(reinterpret_cast<const char *>(&big_endian_value), sizeof(big_endian_value));
+        return toString(field.safeGet<Int64>());
     }
-
-    if (which.isUInt16())
+    if (which.isEnum8() || which.isEnum16() || which.isDate() || which.isDate32() || which.isDateTime() || which.isDateTime64())
     {
-        UInt16 value = field.safeGet<UInt16>();
-        UInt16 big_endian_value;
-        unalignedStoreBigEndian<UInt16>(&big_endian_value, value);
-        return std::string(reinterpret_cast<const char *>(&big_endian_value), sizeof(big_endian_value));
+        return toString(field.safeGet<UInt64>());
     }
-
-    if (which.isUInt8())
+    if (which.isFloat32() || which.isFloat64())
     {
-        UInt8 value = field.safeGet<UInt8>();
-        return std::string(reinterpret_cast<const char *>(&value), sizeof(value));
+        return toString(field.safeGet<Float64>());
+    }
+    if (which.isUUID() || which.isIPv4() || which.isIPv6())
+    {
+        return field.dump();
     }
 
     // For other types, convert to string representation
@@ -376,7 +410,11 @@ bool MergeTreeIndexConditionSurfFilter::alwaysUnknownOrTrue() const
          RPNElement::FUNCTION_HAS_ANY,
          RPNElement::FUNCTION_HAS_ALL,
          RPNElement::FUNCTION_IN,
-         RPNElement::FUNCTION_NOT_IN});
+         RPNElement::FUNCTION_NOT_IN,
+         RPNElement::FUNCTION_GREATER,
+         RPNElement::FUNCTION_GREATER_OR_EQUALS,
+         RPNElement::FUNCTION_LESS,
+         RPNElement::FUNCTION_LESS_OR_EQUALS});
 }
 
 bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexGranuleSurfFilter * granule) const
@@ -394,7 +432,9 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
             element.function == RPNElement::FUNCTION_IN || element.function == RPNElement::FUNCTION_NOT_IN
             || element.function == RPNElement::FUNCTION_EQUALS || element.function == RPNElement::FUNCTION_NOT_EQUALS
             || element.function == RPNElement::FUNCTION_HAS || element.function == RPNElement::FUNCTION_HAS_ANY
-            || element.function == RPNElement::FUNCTION_HAS_ALL)
+            || element.function == RPNElement::FUNCTION_HAS_ALL || element.function == RPNElement::FUNCTION_GREATER
+            || element.function == RPNElement::FUNCTION_GREATER_OR_EQUALS || element.function == RPNElement::FUNCTION_LESS
+            || element.function == RPNElement::FUNCTION_LESS_OR_EQUALS)
         {
             bool match_rows = true;
             bool match_all = element.function == RPNElement::FUNCTION_HAS_ALL;
@@ -416,7 +456,26 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
                     {
                         std::string key = inner_string->getDataAt(0).toString();
 
-                        match_rows = keyMatchesFilter(filter, key);
+                        LOG_TRACE(
+                            &Poco::Logger::get("SurfFilter"),
+                            "Processing predicate: key='{}', function={}",
+                            key,
+                            static_cast<int>(element.function));
+
+                        // Use range filtering for range operations, exact matching for others
+                        if (element.function == RPNElement::FUNCTION_GREATER || element.function == RPNElement::FUNCTION_GREATER_OR_EQUALS
+                            || element.function == RPNElement::FUNCTION_LESS || element.function == RPNElement::FUNCTION_LESS_OR_EQUALS)
+                        {
+                            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Using range filtering for key='{}'", key);
+                            match_rows = keyMatchesRangeFilter(filter, key, element.function);
+                        }
+                        else
+                        {
+                            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Using exact matching for key='{}'", key);
+                            match_rows = keyMatchesFilter(filter, key);
+                        }
+
+                        LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Match result for key='{}': {}", key, match_rows);
                     }
                     else
                     {
@@ -551,7 +610,8 @@ bool MergeTreeIndexConditionSurfFilter::traverseFunction(
 
     if (function_name == "equals" || function_name == "notEquals" || function_name == "has" || function_name == "mapContains"
         || function_name == "mapContainsKey" || function_name == "mapContainsValue" || function_name == "indexOf"
-        || function_name == "hasAny" || function_name == "hasAll")
+        || function_name == "hasAny" || function_name == "hasAll" || function_name == "greater" || function_name == "greaterOrEquals"
+        || function_name == "less" || function_name == "lessOrEquals")
     {
         Field const_value;
         DataTypePtr const_type;
@@ -858,7 +918,22 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeEquals(
             if (array_type)
                 return false;
 
-            out.function = function_name == "equals" ? RPNElement::FUNCTION_EQUALS : RPNElement::FUNCTION_NOT_EQUALS;
+            // Map function names to RPNElement::Function enums
+            if (function_name == "equals")
+                out.function = RPNElement::FUNCTION_EQUALS;
+            else if (function_name == "notEquals")
+                out.function = RPNElement::FUNCTION_NOT_EQUALS;
+            else if (function_name == "greater")
+                out.function = RPNElement::FUNCTION_GREATER;
+            else if (function_name == "greaterOrEquals")
+                out.function = RPNElement::FUNCTION_GREATER_OR_EQUALS;
+            else if (function_name == "less")
+                out.function = RPNElement::FUNCTION_LESS;
+            else if (function_name == "lessOrEquals")
+                out.function = RPNElement::FUNCTION_LESS_OR_EQUALS;
+            else
+                return false;
+
             const DataTypePtr actual_type = SurfFilter::getPrimitiveType(index_type);
             auto converted_field = convertFieldToType(value_field, *actual_type, value_type.get());
             if (converted_field.isNull())
@@ -1055,6 +1130,7 @@ void MergeTreeIndexAggregatorSurfFilter::update(const Block & block, size_t * po
             for (const auto & key : keys)
             {
                 accumulated_keys[column].push_back(key);
+                LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Accumulated key for column {}: '{}'", column, key);
             }
         }
         catch (...)
@@ -1067,7 +1143,9 @@ void MergeTreeIndexAggregatorSurfFilter::update(const Block & block, size_t * po
             // Accumulate hash keys
             for (const auto & hash : index_data)
             {
-                accumulated_keys[column].push_back(std::to_string(hash));
+                std::string key = std::to_string(hash);
+                accumulated_keys[column].push_back(key);
+                LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Accumulated hash key for column {}: '{}'", column, key);
             }
         }
     }

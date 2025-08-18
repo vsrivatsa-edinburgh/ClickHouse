@@ -151,10 +151,23 @@ struct SurfFilterHash
         WhichDataType which(data_type);
 
         // Convert field to string representation that SuRF can use
-        if (which.isUInt8() || which.isUInt16() || which.isUInt32() || which.isUInt64() || which.isUInt128() || which.isUInt256()
-            || which.isInt8() || which.isInt16() || which.isInt32() || which.isInt64() || which.isInt128() || which.isInt256()
-            || which.isEnum8() || which.isEnum16() || which.isDate() || which.isDate32() || which.isDateTime() || which.isDateTime64()
-            || which.isFloat32() || which.isFloat64() || which.isUUID() || which.isIPv4() || which.isIPv6())
+        if (which.isUInt8() || which.isUInt16() || which.isUInt32() || which.isUInt64() || which.isUInt128() || which.isUInt256())
+        {
+            return build_key_column(field.isNull() ? "0" : toString(field.safeGet<UInt64>()));
+        }
+        if (which.isInt8() || which.isInt16() || which.isInt32() || which.isInt64() || which.isInt128() || which.isInt256())
+        {
+            return build_key_column(field.isNull() ? "0" : toString(field.safeGet<Int64>()));
+        }
+        if (which.isEnum8() || which.isEnum16() || which.isDate() || which.isDate32() || which.isDateTime() || which.isDateTime64())
+        {
+            return build_key_column(field.isNull() ? "0" : toString(field.safeGet<UInt64>()));
+        }
+        if (which.isFloat32() || which.isFloat64())
+        {
+            return build_key_column(field.isNull() ? "0.0" : toString(field.safeGet<Float64>()));
+        }
+        if (which.isUUID() || which.isIPv4() || which.isIPv6())
         {
             return build_key_column(field.dump());
         }

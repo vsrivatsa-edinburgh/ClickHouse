@@ -93,12 +93,12 @@ public:
     ~SurfFilter();
 
     /// Copy constructor and assignment operator are deleted due to unique_ptr
-    SurfFilter(const SurfFilter&) = delete;
-    SurfFilter& operator=(const SurfFilter&) = delete;
+    SurfFilter(const SurfFilter &) = delete;
+    SurfFilter & operator=(const SurfFilter &) = delete;
 
     /// Move constructor and assignment operator
-    SurfFilter(SurfFilter&&) = default;
-    SurfFilter& operator=(SurfFilter&&) = default;
+    SurfFilter(SurfFilter &&) = default;
+    SurfFilter & operator=(SurfFilter &&) = default;
 
     /// Initialize empty SuRF for incremental insertion
     void initializeForIncrementalInsertion(const SurfFilterParameters & params);
@@ -116,15 +116,11 @@ public:
     /// For text indexes: returns true if all tokens in the query filter exist in this filter
     bool contains(const std::vector<std::string> & tokens) const;
 
-    // Range capabilities commented out for now - will be implemented later
-    /*
     /// Range lookup - returns true if any key in range might exist
-    bool lookupRange(const std::string& left_key, bool left_inclusive, 
-                     const std::string& right_key, bool right_inclusive) const;
-    
+    bool lookupRange(const std::string & left_key, bool left_inclusive, const std::string & right_key, bool right_inclusive) const;
+
     /// Approximate count of keys in range (may undercount by at most 2)
-    UInt64 approxCount(const std::string& left_key, const std::string& right_key) const;
-    */
+    UInt64 approxCount(const std::string & left_key, const std::string & right_key) const;
 
     /// Clear all data
     void clear();

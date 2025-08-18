@@ -7,6 +7,7 @@
 #include <DataTypes/DataTypeNullable.h>
 #include <IO/VarInt.h>
 #include <Interpreters/SurfFilter.h>
+#include <Common/logger_useful.h>
 
 #include <algorithm>
 #include <string>
@@ -67,7 +68,7 @@ SurfFilter::~SurfFilter()
 void SurfFilter::initializeForIncrementalInsertion(const SurfFilterParameters & params)
 {
     params_ = params;
-    
+
     // Properly destroy and reset any existing SuRF to prevent memory leak
     if (surf_)
     {
@@ -93,6 +94,8 @@ bool SurfFilter::insert(const std::string & key)
     {
         return false;
     }
+
+    LOG_TRACE(getLogger("SurfFilter"), "Inserting key into SuRF filter: '{}'", key);
 
     // Use the SuRF library's direct insert method
     bool result = surf_->insert(key);
@@ -153,21 +156,34 @@ bool SurfFilter::contains(const std::vector<std::string> & tokens) const
     return true; // All tokens exist in the granule
 }
 
-// Range capabilities commented out for now
-/*
-bool SurfFilter::lookupRange(const std::string& left_key, bool left_inclusive, 
-                            const std::string& right_key, bool right_inclusive) const
+bool SurfFilter::lookupRange(const std::string & left_key, bool left_inclusive, const std::string & right_key, bool right_inclusive) const
 {
-    // TODO: Implement range lookup when ready
-    return false;
+    LOG_TRACE(&Poco::Logger::get("SurfFilter"), "SurfFilter::lookupRange called: left='{}' ({}), right='{}' ({})", 
+              left_key, left_inclusive ? "inclusive" : "exclusive", 
+              right_key, right_inclusive ? "inclusive" : "exclusive");
+              
+    if (!finalized_ || !surf_)
+    {
+        LOG_TRACE(&Poco::Logger::get("SurfFilter"), "SurfFilter not ready: finalized_={}, surf_={}", finalized_, (surf_ != nullptr));
+        return false; // Not ready for lookups
+    }
+
+    // Use SuRF's range lookup capability
+    bool result = surf_->lookupRange(left_key, left_inclusive, right_key, right_inclusive);
+    LOG_TRACE(&Poco::Logger::get("SurfFilter"), "SuRF lookupRange result: {}", result);
+    return result;
 }
 
-UInt64 SurfFilter::approxCount(const std::string& left_key, const std::string& right_key) const
+UInt64 SurfFilter::approxCount(const std::string & left_key, const std::string & right_key) const
 {
-    // TODO: Implement approximate range counting when ready
-    return 0;
+    if (!finalized_ || !surf_)
+    {
+        return 0; // Not ready for lookups
+    }
+
+    // Use SuRF's approximate range count capability
+    return surf_->approxCount(left_key, right_key);
 }
-*/
 
 void SurfFilter::clear()
 {
@@ -262,6 +278,17 @@ void SurfFilter::destroy()
 
 void SurfFilter::buildFromKeys(const std::vector<std::string> & keys)
 {
+    LOG_TRACE(getLogger("SurfFilter"), "Building SuRF filter from {} keys", keys.size());
+    
+    for (size_t i = 0; i < std::min(keys.size(), size_t(10)); ++i)
+    {
+        LOG_TRACE(getLogger("SurfFilter"), "Inserting key[{}]: '{}'", i, keys[i]);
+    }
+    if (keys.size() > 10)
+    {
+        LOG_TRACE(getLogger("SurfFilter"), "... and {} more keys", keys.size() - 10);
+    }
+
     // Clear any existing SuRF to prevent memory leak
     if (surf_)
     {

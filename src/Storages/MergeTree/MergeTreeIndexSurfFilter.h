@@ -58,6 +58,11 @@ public:
             FUNCTION_HAS_ALL,
             FUNCTION_IN,
             FUNCTION_NOT_IN,
+            /// Range functions for SuRF
+            FUNCTION_GREATER,
+            FUNCTION_GREATER_OR_EQUALS,
+            FUNCTION_LESS,
+            FUNCTION_LESS_OR_EQUALS,
             FUNCTION_UNKNOWN, /// Can take any value.
             /// Operators of the logical expression.
             FUNCTION_NOT,
