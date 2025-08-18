@@ -43,41 +43,45 @@ std::string extractKeyFromField(const Field & field, const DataTypePtr & data_ty
 std::vector<std::string> extractKeysFromColumn(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit);
 
 // Convert false positive probability to SuRF parameters
-static SurfFilterParameters getSurfParameters(double false_positive_probability)
+static SurfFilterParameters getSurfParameters(int variant)
 {
     // For SuRF, we can configure parameters based on false positive probability
     // Lower false positive probability = more aggressive suffix storage
 
-    if (false_positive_probability <= 0.01) // Very low FP rate
+    if (variant == 0) // Low FP rate
     {
-        // Use real suffixes for maximum accuracy
-        return SurfFilterParameters(true, 16, kReal, 0, 4);
-    }
-    else if (false_positive_probability <= 0.05) // Medium FP rate
-    {
-        // Use shorter hash suffixes
+        // Use hash suffixes with more suffix bits for maximum accuracy
         return SurfFilterParameters(true, 16, kHash, 4, 0);
     }
-    else // High FP rate (> 0.05)
+    else if (variant == 1) // Very low FP rate
+    {
+        // Use shorter hash suffixes
+        return SurfFilterParameters(true, 16, kHash, 8, 0);
+    }
+    else if (variant == 2) // High FP rate (0.01)
+    {
+        // Use real suffixes for better performance
+        return SurfFilterParameters(true, 16, kReal, 0, 8);
+    }
+    else // Very high FP rate (> 0.025)
     {
         // No suffixes for maximum speed
         return SurfFilterParameters(true, 16, kNone, 0, 0);
     }
 }
 
-MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(size_t index_columns_, double false_positive_probability)
+MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(size_t index_columns_, int variant)
     : surf_filters(index_columns_)
 {
     total_rows = 0;
     // Create SurfFilter with user-provided parameters
-    SurfFilterParameters params = getSurfParameters(false_positive_probability);
+    SurfFilterParameters params = getSurfParameters(variant);
 
     for (size_t column = 0; column < index_columns_; ++column)
         surf_filters[column] = std::make_shared<SurfFilter>(params);
 }
 
-MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(
-    const std::vector<std::set<std::string>> & column_keys_, double false_positive_probability)
+MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(const std::vector<std::set<std::string>> & column_keys_, int variant)
     : surf_filters(column_keys_.size())
 {
     if (column_keys_.empty())
@@ -90,12 +94,12 @@ MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(
     total_rows = surf_filter_max_size;
 
     // Create SurfFilter with user-provided parameters
-    SurfFilterParameters params = getSurfParameters(false_positive_probability);
+    SurfFilterParameters params = getSurfParameters(variant);
 
     for (size_t column = 0, columns = column_keys_.size(); column < columns; ++column)
     {
         surf_filters[column] = std::make_shared<SurfFilter>(params);
-        fillingSurfFilterWithKeys(surf_filters[column], column_keys_[column], false_positive_probability);
+        fillingSurfFilterWithKeys(surf_filters[column], column_keys_[column], variant);
     }
 }
 
@@ -124,7 +128,7 @@ void MergeTreeIndexGranuleSurfFilter::deserializeBinary(ReadBuffer & istr, Merge
     {
         if (!filter)
         {
-            SurfFilterParameters params = getSurfParameters(0.025); // Use default false positive probability
+            SurfFilterParameters params = getSurfParameters(1); // Use default false positive probability
             filter = std::make_shared<SurfFilter>(params);
         }
         filter->deserialize(istr);
@@ -146,7 +150,7 @@ void MergeTreeIndexGranuleSurfFilter::serializeBinary(WriteBuffer & ostr) const
 }
 
 void MergeTreeIndexGranuleSurfFilter::fillingSurfFilterWithKeys(
-    SurfFilterPtr & surf_filter, const std::set<std::string> & keys, double false_positive_probability) const
+    SurfFilterPtr & surf_filter, const std::set<std::string> & keys, int variant) const
 {
     if (keys.empty())
         return;
@@ -155,7 +159,7 @@ void MergeTreeIndexGranuleSurfFilter::fillingSurfFilterWithKeys(
     std::vector<std::string> keys_vector(keys.begin(), keys.end());
 
     // Create SuRF with the sorted keys
-    SurfFilterParameters params = getSurfParameters(false_positive_probability);
+    SurfFilterParameters params = getSurfParameters(variant);
     *surf_filter = SurfFilter(keys_vector, params);
 }
 
@@ -972,11 +976,11 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeEquals(
     return false;
 }
 
-MergeTreeIndexAggregatorSurfFilter::MergeTreeIndexAggregatorSurfFilter(const Names & columns_name_, double false_positive_probability_)
+MergeTreeIndexAggregatorSurfFilter::MergeTreeIndexAggregatorSurfFilter(const Names & columns_name_, int variant_)
     : index_columns_name(columns_name_)
     , surf_filters(columns_name_.size())
     , accumulated_keys(columns_name_.size())
-    , false_positive_probability(false_positive_probability_)
+    , variant(variant_)
 {
     // We don't need to initialize SuRF filters here since we'll create them
     // directly from accumulated keys in getGranuleAndReset()
@@ -998,7 +1002,7 @@ MergeTreeIndexGranulePtr MergeTreeIndexAggregatorSurfFilter::getGranuleAndReset(
         if (accumulated_keys[i].empty())
         {
             // Create empty filter for this column
-            SurfFilterParameters params = getSurfParameters(false_positive_probability);
+            SurfFilterParameters params = getSurfParameters(variant);
             granule_filters[i] = std::make_shared<SurfFilter>(params);
             continue;
         }
@@ -1007,7 +1011,7 @@ MergeTreeIndexGranulePtr MergeTreeIndexAggregatorSurfFilter::getGranuleAndReset(
         std::sort(accumulated_keys[i].begin(), accumulated_keys[i].end());
 
         // Create a new SuRF filter for the granule and build it with sorted keys
-        SurfFilterParameters params = getSurfParameters(false_positive_probability);
+        SurfFilterParameters params = getSurfParameters(variant);
         granule_filters[i] = std::make_shared<SurfFilter>(accumulated_keys[i], params);
     }
 
@@ -1072,20 +1076,20 @@ void MergeTreeIndexAggregatorSurfFilter::update(const Block & block, size_t * po
     total_rows += max_read_rows;
 }
 
-MergeTreeIndexSurfFilter::MergeTreeIndexSurfFilter(const IndexDescription & index_, double false_positive_probability_)
+MergeTreeIndexSurfFilter::MergeTreeIndexSurfFilter(const IndexDescription & index_, int variant_)
     : IMergeTreeIndex(index_)
-    , false_positive_probability(false_positive_probability_)
+    , variant(variant_)
 {
 }
 
 MergeTreeIndexGranulePtr MergeTreeIndexSurfFilter::createIndexGranule() const
 {
-    return std::make_shared<MergeTreeIndexGranuleSurfFilter>(index.column_names.size(), false_positive_probability);
+    return std::make_shared<MergeTreeIndexGranuleSurfFilter>(index.column_names.size(), variant);
 }
 
 MergeTreeIndexAggregatorPtr MergeTreeIndexSurfFilter::createIndexAggregator(const MergeTreeWriterSettings & /*settings*/) const
 {
-    return std::make_shared<MergeTreeIndexAggregatorSurfFilter>(index.column_names, false_positive_probability);
+    return std::make_shared<MergeTreeIndexAggregatorSurfFilter>(index.column_names, variant);
 }
 
 MergeTreeIndexConditionPtr MergeTreeIndexSurfFilter::createIndexCondition(const ActionsDAG::Node * predicate, ContextPtr context) const
@@ -1113,15 +1117,15 @@ static void assertIndexColumnsType(const Block & header)
 
 MergeTreeIndexPtr surfFilterIndexCreator(const IndexDescription & index)
 {
-    double false_positive_probability = 0.025; // Default false positive probability
+    int variant = 0; // Default variant
 
     if (!index.arguments.empty())
     {
         const auto & argument = index.arguments[0];
-        false_positive_probability = std::min<Float64>(1.0, std::max<Float64>(argument.safeGet<Float64>(), 0.0));
+        variant = std::min<int>(3, std::max<int>(argument.safeGet<int>(), 0)); // Allow 0-3 range
     }
 
-    return std::make_shared<MergeTreeIndexSurfFilter>(index, false_positive_probability);
+    return std::make_shared<MergeTreeIndexSurfFilter>(index, variant);
 }
 
 void surfFilterIndexValidator(const IndexDescription & index, bool attach)
@@ -1138,8 +1142,12 @@ void surfFilterIndexValidator(const IndexDescription & index, bool attach)
     {
         const auto & argument = index.arguments[0];
 
-        if (!attach && (argument.getType() != Field::Types::Float64 || argument.safeGet<Float64>() < 0 || argument.safeGet<Float64>() > 1))
-            throw Exception(ErrorCodes::BAD_ARGUMENTS, "The SurfFilter false positive must be a double number between 0 and 1.");
+        if (!attach)
+        {
+            int variant_value = argument.safeGet<int>();
+            if (variant_value < 0 || variant_value > 3)
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "The SurfFilter variant must be an integer between 0 and 3.");
+        }
     }
 }
 

@@ -21,9 +21,9 @@ extern const int LOGICAL_ERROR;
 class MergeTreeIndexGranuleSurfFilter final : public IMergeTreeIndexGranule
 {
 public:
-    MergeTreeIndexGranuleSurfFilter(size_t index_columns_, double false_positive_probability = 0.025);
+    MergeTreeIndexGranuleSurfFilter(size_t index_columns_, int variant = 1);
 
-    MergeTreeIndexGranuleSurfFilter(const std::vector<std::set<std::string>> & column_keys, double false_positive_probability = 0.025);
+    MergeTreeIndexGranuleSurfFilter(const std::vector<std::set<std::string>> & column_keys, int variant = 1);
 
     bool empty() const override;
 
@@ -40,7 +40,7 @@ private:
     size_t total_rows = 0;
     std::vector<SurfFilterPtr> surf_filters;
 
-    void fillingSurfFilterWithKeys(SurfFilterPtr & bf, const std::set<std::string> & keys, double false_positive_probability) const;
+    void fillingSurfFilterWithKeys(SurfFilterPtr & bf, const std::set<std::string> & keys, int variant) const;
 };
 
 class MergeTreeIndexConditionSurfFilter final : public IMergeTreeIndexCondition, WithContext
@@ -119,7 +119,7 @@ private:
 class MergeTreeIndexAggregatorSurfFilter final : public IMergeTreeIndexAggregator
 {
 public:
-    MergeTreeIndexAggregatorSurfFilter(const Names & columns_name_, double false_positive_probability = 0.025);
+    MergeTreeIndexAggregatorSurfFilter(const Names & columns_name_, int variant = 1);
 
     bool empty() const override;
 
@@ -135,14 +135,14 @@ private:
     // Accumulate keys for sorting before insertion
     std::vector<std::vector<std::string>> accumulated_keys;
     size_t total_rows = 0;
-    double false_positive_probability;
+    int variant;
 };
 
 
 class MergeTreeIndexSurfFilter final : public IMergeTreeIndex
 {
 public:
-    MergeTreeIndexSurfFilter(const IndexDescription & index_, double false_positive_probability_ = 0.025);
+    MergeTreeIndexSurfFilter(const IndexDescription & index_, int variant = 1);
 
     MergeTreeIndexGranulePtr createIndexGranule() const override;
 
@@ -150,10 +150,8 @@ public:
 
     MergeTreeIndexConditionPtr createIndexCondition(const ActionsDAG::Node * predicate, ContextPtr context) const override;
 
-    double getFalsePositiveProbability() const { return false_positive_probability; }
-
 private:
-    double false_positive_probability;
+    int variant;
 };
 
 }

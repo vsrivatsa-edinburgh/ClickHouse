@@ -885,13 +885,13 @@ convertBloomToSurfParameters(size_t filter_size_bytes, size_t num_hash_functions
     {
         // Largest filter with many hash functions -> very very low FP rate -> use real suffixes
         // approx_fp_rate = 0.001;
-        return SurfFilterParameters(true, 64, kReal, 0, 8);
+        return SurfFilterParameters(true, 16, kReal, 0, 8);
     }
     else if (filter_size_bytes >= 512 && num_hash_functions >= 4)
     {
         // Large filter with many hash functions -> very low FP rate -> use real suffixes
         // approx_fp_rate = 0.001;
-        return SurfFilterParameters(true, 32, kReal, 0, 4);
+        return SurfFilterParameters(true, 16, kReal, 0, 4);
     }
     else if (filter_size_bytes >= 256 && num_hash_functions >= 3)
     {
@@ -903,13 +903,13 @@ convertBloomToSurfParameters(size_t filter_size_bytes, size_t num_hash_functions
     {
         // Medium filter -> medium FP rate -> use shorter hash suffixes
         // approx_fp_rate = 0.025;
-        return SurfFilterParameters(true, 8, kHash, 2, 0);
+        return SurfFilterParameters(true, 16, kHash, 2, 0);
     }
     else
     {
         // Small filter or few hash functions -> higher FP rate -> no suffixes
         // approx_fp_rate = 0.05;
-        return SurfFilterParameters(true, 8, kNone, 0, 0);
+        return SurfFilterParameters(true, 16, kNone, 0, 0);
     }
 }
 
