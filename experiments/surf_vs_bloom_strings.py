@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-SuRF vs Bloom Filter Performance Evaluation Script - Numeric Point Queries
+SuRF vs Bloom Filter Performance Evaluation Script - String Point Queries
 
-This script compares the performance of SuRF vs Bloom filters for numeric point queries.
-Uses simple 0-1M numeric data with ID-based equality queries.
+This script compares the performance of SuRF vs Bloom filters for string point queries.
+Uses words from words.txt file with string equality queries.
+50% of queries are for existing words, 50% are for non-existing words.
 """
 
 import subprocess
@@ -122,11 +123,11 @@ class ClickHouseIndexEvaluator:
                 print(f"✗ Error dropping table {table_name}")
 
     def create_surf_table(self, table_name: str, approx_fp_rate: float, granularity: int) -> bool:
-        """Create table with SuRF indexes for numeric data"""
+        """Create table with SuRF indexes for string data"""
         create_sql = f"""
         CREATE TABLE {table_name} (
-            id Int64,
-            INDEX idx_id id TYPE surf_filter({approx_fp_rate}) GRANULARITY 1
+            word String,
+            INDEX idx_word word TYPE surf_filter({approx_fp_rate}) GRANULARITY 1
         ) ENGINE = MergeTree()
         ORDER BY ()
         SETTINGS index_granularity = {granularity}
@@ -141,11 +142,11 @@ class ClickHouseIndexEvaluator:
             return False
 
     def create_bloom_table(self, table_name: str, approx_fp_rate: float, granularity: int) -> bool:
-        """Create table with Bloom indexes for numeric data"""
+        """Create table with Bloom indexes for string data"""
         create_sql = f"""
         CREATE TABLE {table_name} (
-            id Int64,
-            INDEX idx_id id TYPE bloom_filter({approx_fp_rate}) GRANULARITY 1
+            word String,
+            INDEX idx_word word TYPE bloom_filter({approx_fp_rate}) GRANULARITY 1
         ) ENGINE = MergeTree()
         ORDER BY ()
         SETTINGS index_granularity = {granularity}
@@ -160,27 +161,56 @@ class ClickHouseIndexEvaluator:
             print(create_sql)
             return False
     
-    def insert_test_data(self, table_name: str, num_rows: int = 1000000):
-        """Insert numeric data maintaining order for effective data skipping index usage"""
-        print(f"🔄 Inserting {num_rows} numeric rows into {table_name}...")
+    def load_words_from_file(self, file_path: str = './contrib/SuRF/test/words.txt') -> List[str]:
+        """Load words from the words.txt file"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                words = [line.strip() for line in f if line.strip()]
+            print(f"✓ Loaded {len(words)} words from {file_path}")
+            return words
+        except Exception as e:
+            print(f"✗ Error loading words from {file_path}: {e}")
+            return []
+    
+    def insert_test_data(self, table_name: str, num_rows: int = None):
+        """Insert string data using INSERT ... SELECT from file() function"""
+        
+        words_file_path = 'words.txt'
+                
+        print(f"🔄 Inserting words from {words_file_path} into {table_name} using INSERT ... SELECT...")
         
         # Add delay before insertion
         print("⏳ Delay before insertion...")
         time.sleep(2)
         
-        insert_query = f"""
-        INSERT INTO {table_name} 
-        SELECT 
-            number as id
-        FROM numbers(1, {num_rows})
-        ORDER BY rand()
-        """
+        # Use INSERT ... SELECT with file() function to read directly from the words file
+        if num_rows is None:
+            # Insert all words from file
+            insert_query = f"""
+            INSERT INTO {table_name} (word)
+            SELECT trim(line) as word
+            FROM file('{words_file_path}', 'LineAsString')
+            WHERE trim(line) != ''
+            """
+            print(f"🔄 Inserting ALL words from file into {table_name}...")
+        else:
+            # Insert limited number of words using LIMIT
+            insert_query = f"""
+            INSERT INTO {table_name} (word)
+            SELECT trim(line) as word
+            FROM file('{words_file_path}', 'LineAsString')
+            WHERE trim(line) != ''
+            LIMIT {num_rows}
+            """
+            print(f"🔄 Inserting up to {num_rows} words from file into {table_name}...")
         
         result, success = self.execute_query(insert_query)
         
         if not success:
-            print(f"✗ Error inserting numbers: {result}")
-            return
+            print(f"✗ Error inserting data: {result}")
+            return []
+        
+        print("✓ Insert query completed successfully")
         
         # Add delay after insertion
         print("⏳ Delay after insertion...")
@@ -192,36 +222,108 @@ class ClickHouseIndexEvaluator:
         
         if count_success:
             actual_rows = int(count_result.strip()) if count_result.strip() else 0
-            print(f"✓ Inserted {actual_rows} numeric rows into {table_name}")
+            print(f"✓ Inserted {actual_rows} string rows into {table_name}")
         else:
-            print(f"✓ Inserted numeric data into {table_name}")
+            print(f"✓ Inserted string data into {table_name}")
         
-        print("💥 Crashing server after insertion to test persistence...")
-        time.sleep(1)
+        # Load words from file to return for query generation
+        all_words = self.load_words_from_file()
+        if num_rows is None:
+            return all_words
+        else:
+            return all_words[:min(num_rows, len(all_words))]
     
-    def generate_test_queries(self, num_queries: int = 50) -> List[Tuple[str, int, bool]]:
-        """Generate random point queries for ID equality with metadata"""
+    def generate_test_queries(self, inserted_words: List[str], num_queries: int = 50) -> List[Tuple[str, str, bool]]:
+        """Generate random point queries for string equality with metadata"""
         queries = []
+        
+        # Create a set for fast lookup
+        inserted_words_set = set(inserted_words)
+        
+        # Generate non-existing words by manipulating existing words
+        non_existing_words = []
+        max_attempts = len(inserted_words) * 2  # Reasonable limit to avoid infinite loops
+        attempts = 0
+        
+        while len(non_existing_words) < 500 and attempts < max_attempts:
+            attempts += 1
+            word = random.choice(inserted_words)
+            
+            # Strategy 1: Add/remove characters
+            if random.random() < 0.3:
+                if len(word) > 3:  # Remove a character
+                    pos = random.randint(0, len(word) - 1)
+                    modified = word[:pos] + word[pos+1:]
+                else:  # Add a character
+                    pos = random.randint(0, len(word))
+                    char = random.choice('abcdefghijklmnopqrstuvwxyz')
+                    modified = word[:pos] + char + word[pos:]
+            
+            # Strategy 2: Replace characters
+            elif random.random() < 0.6:
+                if len(word) > 0:
+                    pos = random.randint(0, len(word) - 1)
+                    char = random.choice('abcdefghijklmnopqrstuvwxyz')
+                    modified = word[:pos] + char + word[pos+1:]
+                else:
+                    modified = word + 'x'
+            
+            # Strategy 3: Reverse or scramble
+            elif random.random() < 0.8:
+                if len(word) > 1:
+                    # Scramble the word
+                    chars = list(word)
+                    random.shuffle(chars)
+                    modified = ''.join(chars)
+                else:
+                    modified = word + 'zz'
+            
+            # Strategy 4: Concatenate parts of two words
+            else:
+                if len(inserted_words) > 1:
+                    word2 = random.choice(inserted_words)
+                    len1 = random.randint(1, max(1, len(word) // 2))
+                    len2 = random.randint(1, max(1, len(word2) // 2))
+                    modified = word[:len1] + word2[:len2]
+                else:
+                    modified = word + '_modified'
+            
+            # Ensure the modified word doesn't exist in the original set
+            if modified and modified not in inserted_words_set and modified not in non_existing_words:
+                non_existing_words.append(modified)
+        
+        # If we still don't have enough, add some simple suffixes
+        while len(non_existing_words) < 500:
+            word = random.choice(inserted_words)
+            suffix = random.choice(['_fake', '_test', '_nonexist', '999', 'zzz', 'xxx'])
+            modified = word + suffix
+            if modified not in inserted_words_set and modified not in non_existing_words:
+                non_existing_words.append(modified)
+        
+        print(f"✓ Generated {len(non_existing_words)} non-existing words from existing words")
+        
         for _ in range(num_queries):
-            # Generate random ID between 0 and 999,999 (existing) or higher (non-existing)
-            if random.random() < 0.5:  # 70% existing IDs
-                target_id = random.randint(0, 999999)
+            if random.random() < 0.5:  # 50% existing words
+                target_word = random.choice(inserted_words)
                 should_exist = True
-            else:  # 50% non-existing IDs
-                target_id = random.randint(1000000, 1999999)
+            else:  # 50% non-existing words
+                target_word = random.choice(non_existing_words)
                 should_exist = False
             
-            query = f"SELECT COUNT(*) FROM {{table}} WHERE id = {target_id} SETTINGS force_data_skipping_indices='idx_id' /* nonce:{self.nonce} */"
-            queries.append((query, target_id, should_exist))
+            # Escape single quotes in the word for SQL
+            escaped_word = target_word.replace("'", "''")
+            query = f"SELECT COUNT(*) FROM {{table}} WHERE word = '{escaped_word}' SETTINGS force_data_skipping_indices='idx_word' /* nonce:{self.nonce} */"
+            queries.append((query, target_word, should_exist))
+        
         return queries
     
-    def run_query_performance_test(self, table_name: str, queries: List[Tuple[str, int, bool]], iterations: int = 1) -> Dict:
+    def run_query_performance_test(self, table_name: str, queries: List[Tuple[str, str, bool]], iterations: int = 1) -> Dict:
         """Run performance test on queries and collect metrics"""
         results = {
             'table_name': table_name,
             'total_queries': len(queries) * iterations,
             'execution_times': [],
-            'index_usage': {'idx_id': []},
+            'index_usage': {'idx_word': []},
             'granules_examined': [],
             'query_details': [],  # Store detailed results per query
             'nonce': self.nonce
@@ -237,7 +339,7 @@ class ClickHouseIndexEvaluator:
         batch_start_time = time.time()
         
         for iteration in range(iterations):
-            for i, (query_template, target_id, should_exist) in enumerate(queries):
+            for i, (query_template, target_word, should_exist) in enumerate(queries):
                 query = query_template.format(table=table_name)
                 
                 # Run EXPLAIN to get index usage
@@ -256,23 +358,23 @@ class ClickHouseIndexEvaluator:
                     
                     if explain_success:
                         # Parse index usage from explain
-                        id_usage = self.parse_index_usage(explain_output, 'idx_id')
-                        results['index_usage']['idx_id'].append(id_usage)
+                        word_usage = self.parse_index_usage(explain_output, 'idx_word')
+                        results['index_usage']['idx_word'].append(word_usage)
                         
                         # Calculate granules examined vs expected
-                        total_granules = id_usage.get('total_granules', 0)
-                        scanned_granules = id_usage.get('scanned_granules', 0)  # Actually scanned granules
+                        total_granules = word_usage.get('total_granules', 0)
+                        scanned_granules = word_usage.get('scanned_granules', 0)  # Actually scanned granules
                         
-                        print(f"    Query ID={target_id}, should_exist={should_exist}")
+                        print(f"    Query word='{target_word}', should_exist={should_exist}")
                         print(f"    Total granules: {total_granules}, Scanned: {scanned_granules}")
 
                         # Calculate excessive granules and false positive ratio
                         if should_exist:
-                            # For existing IDs, we expect exactly 1 granule to be examined
+                            # For existing words, we expect exactly 1 granule to be examined
                             expected_granules = 1
                             excessive_granules = max(0, scanned_granules - expected_granules)
                         else:
-                            # For non-existing IDs, we expect 0 granules to be examined
+                            # For non-existing words, we expect 0 granules to be examined
                             expected_granules = 0
                             excessive_granules = scanned_granules
                         
@@ -293,19 +395,19 @@ class ClickHouseIndexEvaluator:
                     
                     # Store detailed query information (no binary false positive tracking)
                     results['query_details'].append({
-                        'target_id': target_id,
+                        'target_word': target_word,
                         'should_exist': should_exist,
                         'granules_examined': scanned_granules,
                         'excessive_granules': excessive_granules,
                         'false_positive_ratio': false_positive_ratio,
-                        'index_usage': id_usage
+                        'index_usage': word_usage
                     })
                         
                 else:
                     print(f"✗ Query failed: {result_output}")
                     results['granules_examined'].append(0)
                     results['query_details'].append({
-                        'target_id': target_id,
+                        'target_word': target_word,
                         'should_exist': should_exist,
                         'granules_examined': 0,
                         'excessive_granules': 0,
@@ -526,9 +628,10 @@ class ClickHouseIndexEvaluator:
         
         # Simplified configuration parameters for numeric testing
         configs = [
+            (3, 0.01),
             (1, 0.01),
-            (0, 0.025),
-            (2, 0.05)
+            (0, 0.01),
+            (2, 0.01)
         ]
         
         results = []
@@ -559,17 +662,21 @@ class ClickHouseIndexEvaluator:
                 print(f"✗ Failed to create tables for config {config_name}")
                 continue
             
-            # Insert test data (1 million rows)
-            self.insert_test_data(surf_table, 1000000)
-            self.insert_test_data(bloom_table, 1000000)
+            # Insert test data using INSERT ... SELECT
+            inserted_words_surf = self.insert_test_data(surf_table, None)
+            inserted_words_bloom = self.insert_test_data(bloom_table, None)
             
-            # Restart ClickHouse server after data insertion to test persistence
-            print("🔄 Restarting ClickHouse server after data insertion...")
-            self.restart_clickhouse_server()
+            # Use the same set of words for consistent comparison
+            if inserted_words_surf and inserted_words_bloom:
+                inserted_words = inserted_words_surf  # Use words from surf table
+            else:
+                print("✗ Failed to insert data, skipping this configuration")
+                continue
             
             # Generate and run test queries (50 random point queries)
-            test_queries = self.generate_test_queries(50)
+            test_queries = self.generate_test_queries(inserted_words, 50)
             
+            print(f"🔍 Running test queries for {config_name}...")
             surf_results = self.run_query_performance_test(surf_table, test_queries, 1)
             bloom_results = self.run_query_performance_test(bloom_table, test_queries, 1)
             
@@ -746,9 +853,9 @@ def main():
     
     args = parser.parse_args()
     
-    print("🎯 Starting SuRF vs Bloom Filter Evaluation (Numeric Point Queries)")
+    print("🎯 Starting SuRF vs Bloom Filter Evaluation (String Point Queries)")
     print(f"   Using ClickHouse client: {args.client_path}")
-    print("   Test data: 1M rows (0 to 999,999)")
+    print("   Test data: 234369 words")
     print("   Query type: Point queries on ID field")
     print("   Index granularity: 100 (fixed)")
     

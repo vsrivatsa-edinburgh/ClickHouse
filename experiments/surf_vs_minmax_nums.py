@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-SuRF vs Bloom Filter Performance Evaluation Script - Numeric Point Queries
+SuRF vs MinMax Filter Performance Evaluation Script - Range Queries (BETWEEN)
 
-This script compares the performance of SuRF vs Bloom filters for numeric point queries.
-Uses simple 0-1M numeric data with ID-based equality queries.
+This script compares the performance of SuRF vs MinMax filters for closed range queries.
+Uses 1M random numeric data with BETWEEN queries.
 """
 
 import subprocess
@@ -122,7 +122,7 @@ class ClickHouseIndexEvaluator:
                 print(f"✗ Error dropping table {table_name}")
 
     def create_surf_table(self, table_name: str, approx_fp_rate: float, granularity: int) -> bool:
-        """Create table with SuRF indexes for numeric data"""
+        """Create table with SuRF indexes for numeric range data"""
         create_sql = f"""
         CREATE TABLE {table_name} (
             id Int64,
@@ -140,29 +140,27 @@ class ClickHouseIndexEvaluator:
             print(create_sql)
             return False
 
-    def create_bloom_table(self, table_name: str, approx_fp_rate: float, granularity: int) -> bool:
-        """Create table with Bloom indexes for numeric data"""
+    def create_minmax_table(self, table_name: str, granularity: int) -> bool:
+        """Create table with MinMax indexes for numeric range data"""
         create_sql = f"""
         CREATE TABLE {table_name} (
             id Int64,
-            INDEX idx_id id TYPE bloom_filter({approx_fp_rate}) GRANULARITY 1
+            INDEX idx_id id TYPE minmax GRANULARITY 1
         ) ENGINE = MergeTree()
         ORDER BY ()
         SETTINGS index_granularity = {granularity}
         """
-        
         result, success = self.execute_query(create_sql)
         if success:
-            print(f"✓ Created Bloom table {table_name}")
+            print(f"✓ Created MinMax table {table_name}")
             return True
         else:
-            print(f"✗ Error creating Bloom table {table_name}: {result}")
+            print(f"✗ Error creating MinMax table {table_name}: {result}")
             print(create_sql)
-            return False
     
     def insert_test_data(self, table_name: str, num_rows: int = 1000000):
-        """Insert numeric data maintaining order for effective data skipping index usage"""
-        print(f"🔄 Inserting {num_rows} numeric rows into {table_name}...")
+        """Insert 1M random numeric values for range query testing"""
+        print(f"🔄 Inserting {num_rows} random numeric rows into {table_name}...")
         
         # Add delay before insertion
         print("⏳ Delay before insertion...")
@@ -173,7 +171,6 @@ class ClickHouseIndexEvaluator:
         SELECT 
             number as id
         FROM numbers(1, {num_rows})
-        ORDER BY rand()
         """
         
         result, success = self.execute_query(insert_query)
@@ -186,6 +183,23 @@ class ClickHouseIndexEvaluator:
         print("⏳ Delay after insertion...")
         time.sleep(3)
         
+    def generate_range_queries(self, num_queries: int = 50) -> List[Tuple[str, int, int, float]]:
+        """Generate random BETWEEN queries with metadata"""
+        queries = []
+        for _ in range(num_queries):
+            # Generate ranges of different sizes
+            range_size = random.choice([10, 100, 1000, 10000, 100000])  # Different range sizes
+            
+            # Random starting point
+            start_value = random.randint(0, 900000)
+            end_value = start_value + range_size
+            
+            # Calculate expected selectivity (approximate)
+            selectivity = range_size / 1000000.0  # Total range is 0-1M
+
+            query = f"SELECT COUNT(*) FROM {{table}} WHERE id BETWEEN {start_value} AND {end_value} SETTINGS force_data_skipping_indices='idx_id' /* nonce:{self.nonce} */"
+            queries.append((query, start_value, end_value, selectivity))
+        return queries
         # Get actual row count
         count_query = f"SELECT COUNT(*) FROM {table_name}"
         count_result, count_success = self.execute_query(count_query)
@@ -199,23 +213,92 @@ class ClickHouseIndexEvaluator:
         print("💥 Crashing server after insertion to test persistence...")
         time.sleep(1)
     
-    def generate_test_queries(self, num_queries: int = 50) -> List[Tuple[str, int, bool]]:
-        """Generate random point queries for ID equality with metadata"""
-        queries = []
-        for _ in range(num_queries):
-            # Generate random ID between 0 and 999,999 (existing) or higher (non-existing)
-            if random.random() < 0.5:  # 70% existing IDs
-                target_id = random.randint(0, 999999)
-                should_exist = True
-            else:  # 50% non-existing IDs
-                target_id = random.randint(1000000, 1999999)
-                should_exist = False
-            
-            query = f"SELECT COUNT(*) FROM {{table}} WHERE id = {target_id} SETTINGS force_data_skipping_indices='idx_id' /* nonce:{self.nonce} */"
-            queries.append((query, target_id, should_exist))
-        return queries
-    
-    def run_query_performance_test(self, table_name: str, queries: List[Tuple[str, int, bool]], iterations: int = 1) -> Dict:
+    def run_query_performance_test(self, table_name: str, queries: List[Tuple[str, int, int, float]], iterations: int = 1) -> Dict:
+        """Run performance test on range queries and collect metrics"""
+        results = {
+            'table_name': table_name,
+            'total_queries': len(queries) * iterations,
+            'execution_times': [],
+            'index_usage': {'idx_id': []},
+            'granules_examined': [],
+            'query_details': [],  # Store detailed results per query
+            'nonce': self.nonce
+        }
+        
+        print(f"🔄 Running {len(queries)} range queries {iterations} times on {table_name}...")
+        
+        # Get baseline filtering marks metric before starting
+        baseline_filtering_marks = self.get_filtering_marks_metric()
+        print(f"📊 Baseline FilteringMarksWithSecondaryKeysMicroseconds: {baseline_filtering_marks}")
+        
+        # Record start time for this test batch
+        batch_start_time = time.time()
+        
+        for iteration in range(iterations):
+            for i, (query_template, start_value, end_value, selectivity) in enumerate(queries):
+                query = query_template.format(table=table_name)
+                
+                # Run EXPLAIN to get index usage
+                explain_query = f"EXPLAIN indexes = 1 {query}"
+                
+                # Execute actual query
+                result_output, success = self.execute_query(query)
+                
+                if success:
+                    # Get explain results
+                    explain_output, explain_success = self.execute_query(explain_query)
+                    
+                    if explain_success:
+                        index_usage = self.parse_index_usage(explain_output, 'idx_id')
+                        results['index_usage']['idx_id'].append(index_usage)
+                        results['granules_examined'].append(index_usage.get('scanned_granules', 0))
+                        
+                        # Store detailed results
+                        query_detail = {
+                            'iteration': iteration,
+                            'query_index': i,
+                            'start_value': start_value,
+                            'end_value': end_value,
+                            'range_size': end_value - start_value,
+                            'selectivity': selectivity,
+                            'result_count': int(result_output.strip()) if result_output.strip().isdigit() else 0,
+                            'scanned_granules': index_usage.get('scanned_granules', 0),
+                            'total_granules': index_usage.get('total_granules', 0),
+                            'granules_ratio': index_usage.get('granules_ratio', 0.0),
+                            'query': query
+                        }
+                        results['query_details'].append(query_detail)
+                    else:
+                        print(f"⚠️  Could not get explain for query {i}: {explain_output}")
+                else:
+                    print(f"✗ Query {i} failed: {result_output}")
+        
+        # Calculate metrics
+        final_filtering_marks = self.get_filtering_marks_metric()
+        filtering_marks_delta = final_filtering_marks - baseline_filtering_marks
+        
+        results['avg_granules_examined'] = sum(results['granules_examined']) / len(results['granules_examined']) if results['granules_examined'] else 0
+        
+        # Calculate false positive metrics for range queries
+        total_granules_all_queries = sum(usage.get('total_granules', 0) for usage in results['index_usage']['idx_id'])
+        total_scanned_granules = sum(usage.get('scanned_granules', 0) for usage in results['index_usage']['idx_id'])
+        
+        # For range queries, calculate efficiency based on selectivity
+        total_selectivity_based_expected = sum(detail['selectivity'] * detail['total_granules'] for detail in results['query_details'])
+        total_actual_scanned = sum(detail['scanned_granules'] for detail in results['query_details'])
+        
+        results['range_efficiency'] = total_selectivity_based_expected / total_actual_scanned if total_actual_scanned > 0 else 1.0
+        results['avg_range_efficiency'] = results['range_efficiency']
+        
+        results['filtering_marks_microseconds'] = filtering_marks_delta
+        results['avg_filtering_marks_per_query'] = filtering_marks_delta / results['total_queries'] if results['total_queries'] > 0 else 0
+        
+        print(f"✓ Completed performance test for {table_name}")
+        print(f"  Range Efficiency: {results['range_efficiency']:.4f} (higher is better)")
+        print(f"  Filtering marks time: {filtering_marks_delta}μs total, {results['avg_filtering_marks_per_query']:.1f}μs avg per query")
+        print(f"  Avg granules examined: {results['avg_granules_examined']:.2f}")
+        print(f"  Total scanned/expected: {total_actual_scanned}/{total_selectivity_based_expected:.0f}")
+        return results
         """Run performance test on queries and collect metrics"""
         results = {
             'table_name': table_name,
@@ -561,21 +644,63 @@ class ClickHouseIndexEvaluator:
             
             # Insert test data (1 million rows)
             self.insert_test_data(surf_table, 1000000)
-            self.insert_test_data(bloom_table, 1000000)
+
+    def run_evaluation(self) -> List[Dict]:
+        """Run the main evaluation comparing SuRF vs MinMax for range queries"""
+        print("🎯 Starting SuRF vs MinMax evaluation for BETWEEN queries...")
+        
+        # Test configurations for different data skipping granularities
+        test_configs = [
+            {'approx_fp_rate': 1, 'granularity': 100},  # SuRF variant 1, granularity 100
+            {'approx_fp_rate': 2, 'granularity': 100},  # SuRF variant 2, granularity 100
+            {'approx_fp_rate': 1, 'granularity': 1000}, # SuRF variant 1, granularity 1000
+        ]
+        
+        results = []
+        
+        for config in test_configs:
+            approx_fp_rate = config['approx_fp_rate']
+            granularity = config['granularity']
+            config_name = f"SuRF_var{approx_fp_rate}_gran{granularity}"
+            
+            print(f"{'='*60}")
+            print(f"🧪 Testing configuration: {config_name}")
+            print(f"   SuRF variant: {approx_fp_rate}")
+            print(f"   Index granularity: {granularity}")
+            print(f"{'='*60}")
+            
+            # Create table names with nonce
+            surf_table = f"surf_range_test_{self.nonce}_{approx_fp_rate}_{granularity}"
+            minmax_table = f"minmax_range_test_{self.nonce}_{granularity}"
+            
+            # Delete tables if they exist (cleanup from previous runs)
+            self.delete_tables_if_exist([surf_table, minmax_table])
+            
+            # Create tables
+            surf_created = self.create_surf_table(surf_table, approx_fp_rate, granularity)
+            minmax_created = self.create_minmax_table(minmax_table, granularity)
+            
+            if not (surf_created and minmax_created):
+                print(f"❌ Failed to create tables for {config_name}")
+                continue
+            
+            # Insert 1M rows with random values 0-10M
+            self.insert_test_data(surf_table, 1000000)
+            self.insert_test_data(minmax_table, 1000000)
             
             # Restart ClickHouse server after data insertion to test persistence
             print("🔄 Restarting ClickHouse server after data insertion...")
             self.restart_clickhouse_server()
             
-            # Generate and run test queries (50 random point queries)
-            test_queries = self.generate_test_queries(50)
+            # Generate and run range test queries (50 random BETWEEN queries)
+            range_queries = self.generate_range_queries(50)
             
-            surf_results = self.run_query_performance_test(surf_table, test_queries, 1)
-            bloom_results = self.run_query_performance_test(bloom_table, test_queries, 1)
+            surf_results = self.run_query_performance_test(surf_table, range_queries, 1)
+            minmax_results = self.run_query_performance_test(minmax_table, range_queries, 1)
             
             # Get index sizes
             surf_sizes = self.get_index_sizes(surf_table)
-            bloom_sizes = self.get_index_sizes(bloom_table)
+            minmax_sizes = self.get_index_sizes(minmax_table)
             
             # Compile results
             config_results = {
@@ -586,9 +711,9 @@ class ClickHouseIndexEvaluator:
                     'performance': surf_results,
                     'sizes': surf_sizes
                 },
-                'bloom': {
-                    'performance': bloom_results,
-                    'sizes': bloom_sizes
+                'minmax': {
+                    'performance': minmax_results,
+                    'sizes': minmax_sizes
                 }
             }
             
@@ -598,12 +723,145 @@ class ClickHouseIndexEvaluator:
             self.print_config_results(config_results)
             
             # Cleanup tables to save space
-            self.delete_tables_if_exist([surf_table, bloom_table])
+            self.delete_tables_if_exist([surf_table, minmax_table])
         
         # Print final comparison
         self.print_final_results(results)
         
         return results
+    
+    def print_config_results(self, config_results: Dict):
+        """Print results for a single configuration"""
+        config = config_results['config']
+        surf = config_results['surf']
+        minmax = config_results['minmax']
+        
+        print(f"📊 Results for {config}:")
+        print(f"{'─'*50}")
+        
+        # Performance comparison
+        print("🚀 Performance Metrics:")
+        surf_latency_ms = surf['performance'].get('avg_execution_time', 0) * 1000
+        minmax_latency_ms = minmax['performance'].get('avg_execution_time', 0) * 1000
+        
+        print(f"  SuRF   - Latency: {surf_latency_ms:.2f}ms, "
+              f"Avg Granules: {surf['performance']['avg_granules_examined']:.1f}")
+        print(f"  MinMax - Latency: {minmax_latency_ms:.2f}ms, "
+              f"Avg Granules: {minmax['performance']['avg_granules_examined']:.1f}")
+        
+        # Range efficiency comparison
+        print("🎯 Range Query Efficiency:")
+        surf_efficiency = surf['performance'].get('range_efficiency', 0)
+        minmax_efficiency = minmax['performance'].get('range_efficiency', 0)
+        
+        print(f"  SuRF   - Range Efficiency: {surf_efficiency:.4f}")
+        print(f"  MinMax - Range Efficiency: {minmax_efficiency:.4f}")
+        
+        # Filtering marks comparison  
+        print("⚡ Index Filtering Performance:")
+        surf_filtering_avg = surf['performance'].get('avg_filtering_marks_per_query', 0)
+        minmax_filtering_avg = minmax['performance'].get('avg_filtering_marks_per_query', 0)
+        print(f"  SuRF   - Avg filtering time: {surf_filtering_avg:.1f}μs per query")
+        print(f"  MinMax - Avg filtering time: {minmax_filtering_avg:.1f}μs per query")
+        
+        # Size comparison
+        print("💾 Index Sizes:")
+        if 'total' in surf['sizes']:
+            print(f"  SuRF   - Compressed: {self.format_bytes(surf['sizes']['total']['compressed_bytes'])}, "
+                  f"Uncompressed: {self.format_bytes(surf['sizes']['total']['uncompressed_bytes'])}")
+        if 'total' in minmax['sizes']:
+            print(f"  MinMax - Compressed: {self.format_bytes(minmax['sizes']['total']['compressed_bytes'])}, "
+                  f"Uncompressed: {self.format_bytes(minmax['sizes']['total']['uncompressed_bytes'])}")
+    
+    def print_final_results(self, all_results: List[Dict]):
+        """Print comprehensive final results"""
+        print(f"{'='*80}")
+        print("🏆 FINAL EVALUATION RESULTS - SuRF vs MinMax Range Queries")
+        print(f"{'='*80}")
+        
+        # Create summary table header
+        print(f"{'Config':<20} {'SuRF Gran':<9} {'MinMax Gran':<11} {'SuRF Eff':<8} {'MinMax Eff':<10} {'SuRF Filt(μs)':<12} {'MinMax Filt(μs)':<15} {'SuRF Comp(KB)':<12} {'MinMax Comp(KB)':<15}")
+        print("─" * 120)
+        
+        for result in all_results:
+            config = result['config']
+            surf_perf = result['surf']['performance']
+            minmax_perf = result['minmax']['performance']
+            surf_sizes = result['surf']['sizes']
+            minmax_sizes = result['minmax']['sizes']
+            
+            # Safe access with defaults
+            surf_granules = surf_perf.get('avg_granules_examined', 0)
+            minmax_granules = minmax_perf.get('avg_granules_examined', 0)
+            surf_efficiency = surf_perf.get('range_efficiency', 0)
+            minmax_efficiency = minmax_perf.get('range_efficiency', 0)
+            surf_filtering = surf_perf.get('avg_filtering_marks_per_query', 0)
+            minmax_filtering = minmax_perf.get('avg_filtering_marks_per_query', 0)
+            
+            surf_comp_kb = surf_sizes.get('total', {}).get('compressed_bytes', 0) / 1024
+            minmax_comp_kb = minmax_sizes.get('total', {}).get('compressed_bytes', 0) / 1024
+            
+            print(f"{config:<20} "
+                  f"{surf_granules:<9.1f} "
+                  f"{minmax_granules:<11.1f} "
+                  f"{surf_efficiency:<8.3f} "
+                  f"{minmax_efficiency:<10.3f} "
+                  f"{surf_filtering:<12.1f} "
+                  f"{minmax_filtering:<15.1f} "
+                  f"{surf_comp_kb:<12.0f} "
+                  f"{minmax_comp_kb:<15.0f}")
+        
+        # Save detailed JSON
+        json_filename = f"surf_vs_minmax_range_{self.nonce}_{int(time.time())}.json"
+        with open(json_filename, 'w') as f:
+            json.dump(all_results, f, indent=2, default=str)
+        print(f"📄 Detailed results saved to {json_filename}")
+        print(f"🎯 Evaluation nonce: {self.nonce}")
+
+def main():
+    parser = argparse.ArgumentParser(description='SuRF vs MinMax Filter Performance Evaluation - Range Queries (BETWEEN)')
+    parser.add_argument('--client-path', default='./build/programs/clickhouse', 
+                       help='Path to ClickHouse client binary')
+    
+    args = parser.parse_args()
+    
+    print("🎯 Starting SuRF vs MinMax Filter Evaluation (Range Queries)")
+    print(f"   Using ClickHouse client: {args.client_path}")
+    print("   Test data: 1M rows with random values 0-1M")
+    print("   Query type: BETWEEN queries on id field")
+    print("   Index granularities: 100, 1000")
+    
+    try:
+        evaluator = ClickHouseIndexEvaluator(args.client_path)
+        print(f"   Evaluation ID: {evaluator.nonce}")
+        
+        # Start ClickHouse server at the beginning
+        print("🚀 Starting ClickHouse server...")
+        evaluator.start_clickhouse_server()
+        
+        results = evaluator.run_evaluation()
+        print("✅ Evaluation completed successfully!")
+        print(f"🎯 Final nonce: {evaluator.nonce}")
+        
+        # Gracefully stop the server at the end
+        print("🛑 Stopping ClickHouse server...")
+        evaluator.stop_clickhouse_server()
+        
+    except Exception as e:
+        print(f"❌ Evaluation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Try to stop server even if evaluation failed
+        try:
+            if 'evaluator' in locals():
+                print("🛑 Attempting to stop ClickHouse server after failure...")
+                evaluator.stop_clickhouse_server()
+        except:
+            pass
+
+if __name__ == "__main__":
+    main()
     
     def print_config_results(self, config_results: Dict):
         """Print results for a single configuration"""

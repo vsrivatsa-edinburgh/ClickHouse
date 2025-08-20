@@ -13,6 +13,7 @@
 #include <Interpreters/SurfFilterHash.h>
 #include <Interpreters/castColumn.h>
 #include <Interpreters/convertFieldToType.h>
+#include <fmt/format.h>
 #include <Interpreters/misc.h>
 #include <Parsers/ASTIdentifier.h>
 #include <Parsers/ASTSubquery.h>
@@ -292,19 +293,27 @@ std::string extractKeyFromField(const Field & field, const DataTypePtr & data_ty
     WhichDataType which(data_type);
 
     if (field.isNull())
-        return ""; // Empty string for null values
+        return "00000000000000000000"; // Zero-padded null value for consistent ordering
 
     if (which.isString() || which.isFixedString())
         return field.safeGet<String>();
 
-    // Use plain string format for all numeric types to match keyWithField
+    // Use zero-padded string format for all numeric types to match keyWithField  
     if (which.isUInt8() || which.isUInt16() || which.isUInt32() || which.isUInt64() || which.isUInt128() || which.isUInt256())
     {
-        return toString(field.safeGet<UInt64>());
+        UInt64 value = field.safeGet<UInt64>();
+        return fmt::format("{:020d}", value);  // 20-digit zero-padded
     }
     if (which.isInt8() || which.isInt16() || which.isInt32() || which.isInt64() || which.isInt128() || which.isInt256())
     {
-        return toString(field.safeGet<Int64>());
+        Int64 value = field.safeGet<Int64>();
+        if (value >= 0) {
+            // Positive: prefix with '1' + zero-padded value
+            return fmt::format("1{:019d}", value);
+        } else {
+            // Negative: prefix with '0' + zero-padded complement for proper ordering
+            return fmt::format("0{:019d}", std::numeric_limits<Int64>::max() + value);
+        }
     }
     if (which.isEnum8() || which.isEnum16() || which.isDate() || which.isDate32() || which.isDateTime() || which.isDateTime64())
     {
@@ -436,16 +445,22 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
             || element.function == RPNElement::FUNCTION_GREATER_OR_EQUALS || element.function == RPNElement::FUNCTION_LESS
             || element.function == RPNElement::FUNCTION_LESS_OR_EQUALS)
         {
-            bool match_rows = true;
+            bool match_rows = false;  // Start with false for OR operations (IN), true for AND operations (HAS_ALL)
             bool match_all = element.function == RPNElement::FUNCTION_HAS_ALL;
+            bool is_in_operation = element.function == RPNElement::FUNCTION_IN || element.function == RPNElement::FUNCTION_NOT_IN;
+            
+            if (match_all)
+                match_rows = true;  // For AND operations, start with true
+            
             const auto & predicate = element.predicate;
-            for (size_t index = 0; match_rows && index < predicate.size(); ++index)
+            
+            for (size_t index = 0; index < predicate.size(); ++index)
             {
                 const auto & query_index_hash = predicate[index];
                 const auto & filter = filters[query_index_hash.first];
                 const ColumnPtr & key_column = query_index_hash.second;
 
-                // Use key-based lookup since we now store keys instead of hashes
+                bool current_match = false;
 
                 // Extract key from the key_column
                 const auto * string_column = typeid_cast<const ColumnConst *>(key_column.get());
@@ -467,24 +482,40 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
                             || element.function == RPNElement::FUNCTION_LESS || element.function == RPNElement::FUNCTION_LESS_OR_EQUALS)
                         {
                             LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Using range filtering for key='{}'", key);
-                            match_rows = keyMatchesRangeFilter(filter, key, element.function);
+                            current_match = keyMatchesRangeFilter(filter, key, element.function);
                         }
                         else
                         {
                             LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Using exact matching for key='{}'", key);
-                            match_rows = keyMatchesFilter(filter, key);
+                            current_match = keyMatchesFilter(filter, key);
                         }
 
-                        LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Match result for key='{}': {}", key, match_rows);
+                        LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Match result for key='{}': {}", key, current_match);
                     }
                     else
                     {
-                        match_rows = maybeTrueOnSurfFilter(&*key_column, filter, match_all);
+                        current_match = maybeTrueOnSurfFilter(&*key_column, filter, match_all);
                     }
                 }
                 else
                 {
-                    match_rows = maybeTrueOnSurfFilter(&*key_column, filter, match_all);
+                    current_match = maybeTrueOnSurfFilter(&*key_column, filter, match_all);
+                }
+                
+                // Update match_rows based on operation type
+                if (match_all)
+                {
+                    // AND operation: all must match
+                    match_rows = match_rows && current_match;
+                    if (!match_rows)
+                        break;  // Early exit for AND operations
+                }
+                else
+                {
+                    // OR operation: any can match
+                    match_rows = match_rows || current_match;
+                    if (match_rows && is_in_operation)
+                        break;  // Early exit for IN operations when we find a match
                 }
             }
 
@@ -649,7 +680,24 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeIn(
         size_t position = header.getPositionByName(key_node_column_name);
         const DataTypePtr & index_type = header.getByPosition(position).type;
         const auto & converted_column = castColumn(ColumnWithTypeAndName{column, type, ""}, index_type);
-        out.predicate.emplace_back(std::make_pair(position, SurfFilterHash::hashWithColumn(index_type, converted_column, 0, row_size)));
+        
+        // For IN operations, we need to create key columns for each value in the set
+        if (function_name == "in" || function_name == "globalIn" || function_name == "notIn" || function_name == "globalNotIn")
+        {
+            // Handle each value in the IN clause separately
+            for (size_t i = 0; i < row_size; ++i)
+            {
+                Field field;
+                converted_column->get(i, field);
+                auto key_column = SurfFilterHash::keyWithField(index_type.get(), field);
+                out.predicate.emplace_back(std::make_pair(position, key_column));
+            }
+        }
+        else
+        {
+            // For non-IN operations, use the original hash-based approach
+            out.predicate.emplace_back(std::make_pair(position, SurfFilterHash::hashWithColumn(index_type, converted_column, 0, row_size)));
+        }
 
         if (function_name == "in" || function_name == "globalIn")
             out.function = RPNElement::FUNCTION_IN;
@@ -747,8 +795,23 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeIn(
                 const auto & array_type = assert_cast<const DataTypeArray &>(*index_type);
                 const auto & array_nested_type = array_type.getNestedType();
                 const auto & converted_column = castColumn(ColumnWithTypeAndName{column, type, ""}, array_nested_type);
-                out.predicate.emplace_back(
-                    std::make_pair(position, SurfFilterHash::hashWithColumn(array_nested_type, converted_column, 0, row_size)));
+                
+                // For IN operations, create key columns for each value
+                if (function_name == "in" || function_name == "globalIn" || function_name == "notIn" || function_name == "globalNotIn")
+                {
+                    for (size_t i = 0; i < row_size; ++i)
+                    {
+                        Field field;
+                        converted_column->get(i, field);
+                        auto key_column = SurfFilterHash::keyWithField(array_nested_type.get(), field);
+                        out.predicate.emplace_back(std::make_pair(position, key_column));
+                    }
+                }
+                else
+                {
+                    out.predicate.emplace_back(
+                        std::make_pair(position, SurfFilterHash::hashWithColumn(array_nested_type, converted_column, 0, row_size)));
+                }
             }
             else
             {

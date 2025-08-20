@@ -173,7 +173,6 @@ class ClickHouseIndexEvaluator:
         SELECT 
             number as id
         FROM numbers(1, {num_rows})
-        ORDER BY rand()
         """
         
         result, success = self.execute_query(insert_query)
