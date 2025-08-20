@@ -155,25 +155,11 @@ struct SurfFilterHash
         // Convert field to string representation that SuRF can use
         if (which.isUInt8() || which.isUInt16() || which.isUInt32() || which.isUInt64() || which.isUInt128() || which.isUInt256())
         {
-            if (field.isNull()) {
-                return build_key_column("00000000000000000000");  // Zero-padded null
-            }
-            UInt64 value = field.safeGet<UInt64>();
-            return build_key_column(fmt::format("{:020d}", value));  // 20-digit zero-padded
+            return build_key_column(field.isNull() ? "0" : toString(field.safeGet<UInt64>()));
         }
         if (which.isInt8() || which.isInt16() || which.isInt32() || which.isInt64() || which.isInt128() || which.isInt256())
         {
-            if (field.isNull()) {
-                return build_key_column("00000000000000000000");  // Zero-padded null
-            }
-            Int64 value = field.safeGet<Int64>();
-            if (value >= 0) {
-                // Positive: prefix with '1' + zero-padded value
-                return build_key_column(fmt::format("1{:019d}", value));
-            } else {
-                // Negative: prefix with '0' + zero-padded complement for proper ordering
-                return build_key_column(fmt::format("0{:019d}", std::numeric_limits<Int64>::max() + value));
-            }
+            return build_key_column(field.isNull() ? "0" : toString(field.safeGet<Int64>()));
         }
         if (which.isEnum8() || which.isEnum16() || which.isDate() || which.isDate32() || which.isDateTime() || which.isDateTime64())
         {

@@ -293,27 +293,19 @@ std::string extractKeyFromField(const Field & field, const DataTypePtr & data_ty
     WhichDataType which(data_type);
 
     if (field.isNull())
-        return "00000000000000000000"; // Zero-padded null value for consistent ordering
+        return "0"; // Simple null representation
 
     if (which.isString() || which.isFixedString())
         return field.safeGet<String>();
 
-    // Use zero-padded string format for all numeric types to match keyWithField  
+    // Simple string format for all numeric types
     if (which.isUInt8() || which.isUInt16() || which.isUInt32() || which.isUInt64() || which.isUInt128() || which.isUInt256())
     {
-        UInt64 value = field.safeGet<UInt64>();
-        return fmt::format("{:020d}", value);  // 20-digit zero-padded
+        return toString(field.safeGet<UInt64>());
     }
     if (which.isInt8() || which.isInt16() || which.isInt32() || which.isInt64() || which.isInt128() || which.isInt256())
     {
-        Int64 value = field.safeGet<Int64>();
-        if (value >= 0) {
-            // Positive: prefix with '1' + zero-padded value
-            return fmt::format("1{:019d}", value);
-        } else {
-            // Negative: prefix with '0' + zero-padded complement for proper ordering
-            return fmt::format("0{:019d}", std::numeric_limits<Int64>::max() + value);
-        }
+        return toString(field.safeGet<Int64>());
     }
     if (which.isEnum8() || which.isEnum16() || which.isDate() || which.isDate32() || which.isDateTime() || which.isDateTime64())
     {
