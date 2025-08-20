@@ -125,9 +125,6 @@ public:
     /// Clear all data
     void clear();
 
-    /// Check if SuRF is empty
-    bool isEmpty() const;
-
     /// Get memory usage in bytes
     size_t memoryUsageBytes() const;
 

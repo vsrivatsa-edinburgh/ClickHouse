@@ -158,10 +158,14 @@ bool SurfFilter::contains(const std::vector<std::string> & tokens) const
 
 bool SurfFilter::lookupRange(const std::string & left_key, bool left_inclusive, const std::string & right_key, bool right_inclusive) const
 {
-    LOG_TRACE(&Poco::Logger::get("SurfFilter"), "SurfFilter::lookupRange called: left='{}' ({}), right='{}' ({})", 
-              left_key, left_inclusive ? "inclusive" : "exclusive", 
-              right_key, right_inclusive ? "inclusive" : "exclusive");
-              
+    LOG_TRACE(
+        &Poco::Logger::get("SurfFilter"),
+        "SurfFilter::lookupRange called: left='{}' ({}), right='{}' ({})",
+        left_key,
+        left_inclusive ? "inclusive" : "exclusive",
+        right_key,
+        right_inclusive ? "inclusive" : "exclusive");
+
     if (!finalized_ || !surf_)
     {
         LOG_TRACE(&Poco::Logger::get("SurfFilter"), "SurfFilter not ready: finalized_={}, surf_={}", finalized_, (surf_ != nullptr));
@@ -190,28 +194,6 @@ void SurfFilter::clear()
     surf_.reset();
     incremental_mode_ = false;
     finalized_ = false;
-}
-
-bool SurfFilter::isEmpty() const
-{
-    if (!surf_)
-    {
-        return true; // No SuRF structure created yet
-    }
-
-    if (incremental_mode_)
-    {
-        // In incremental mode, the structure is deemed empty until finalized
-        return true;
-    }
-
-    if (finalized_)
-    {
-        // Check if the finalized SuRF has any keys
-        return !surf_->hasKeys();
-    }
-
-    return true; // Neither incremental nor finalized, so empty
 }
 
 size_t SurfFilter::memoryUsageBytes() const
@@ -279,7 +261,7 @@ void SurfFilter::destroy()
 void SurfFilter::buildFromKeys(const std::vector<std::string> & keys)
 {
     LOG_TRACE(getLogger("SurfFilter"), "Building SuRF filter from {} keys", keys.size());
-    
+
     for (size_t i = 0; i < std::min(keys.size(), size_t(10)); ++i)
     {
         LOG_TRACE(getLogger("SurfFilter"), "Inserting key[{}]: '{}'", i, keys[i]);

@@ -701,6 +701,10 @@ if (TARGET ch_contrib::surf)
     dbms_target_link_libraries (PUBLIC ch_contrib::surf)
 endif()
 
+if (TARGET ch_contrib::grafite)
+    dbms_target_link_libraries (PUBLIC ch_contrib::grafite)
+endif()
+
 if (ENABLE_TESTS)
     macro (grep_gtest_sources BASE_DIR DST_VAR)
         # Cold match files that are not in tests/ directories
