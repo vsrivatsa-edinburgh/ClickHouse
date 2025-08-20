@@ -141,6 +141,9 @@ MergeTreeIndexFactory::MergeTreeIndexFactory()
     registerCreator("surf_filter", surfFilterIndexCreator);
     registerValidator("surf_filter", surfFilterIndexValidator);
 
+    registerCreator("grafite_filter", grafiteFilterIndexCreator);
+    registerValidator("grafite_filter", grafiteFilterIndexValidator);
+
     registerCreator("ngramsf_v1", surfFilterIndexTextCreator);
     registerValidator("ngramsf_v1", surfFilterIndexTextValidator);
 
@@ -148,7 +151,6 @@ MergeTreeIndexFactory::MergeTreeIndexFactory()
     registerValidator("tokensf_v1", surfFilterIndexTextValidator);
 
     registerCreator("hypothesis", hypothesisIndexCreator);
-
     registerValidator("hypothesis", hypothesisIndexValidator);
 
 #if USE_USEARCH
