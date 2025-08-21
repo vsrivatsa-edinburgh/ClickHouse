@@ -1253,7 +1253,7 @@ MergeTreeIndexPtr grafiteFilterIndexCreator(const IndexDescription & index)
     if (!index.arguments.empty())
     {
         const auto & argument = index.arguments[0];
-        bits_per_key = std::min<double>(10.0, std::max<double>(argument.safeGet<double>(), 0.1)); // Allow 0-10 range
+        bits_per_key = std::max<double>(argument.safeGet<double>(), 0.1); // Allow (0, Inf] range
     }
 
     LOG_TRACE(
@@ -1283,8 +1283,8 @@ void grafiteFilterIndexValidator(const IndexDescription & index, bool attach)
         if (!attach)
         {
             double bits_per_key_value = argument.safeGet<double>();
-            if (bits_per_key_value < 0 || bits_per_key_value > 10)
-                throw Exception(ErrorCodes::BAD_ARGUMENTS, "The GrafiteFilter bits_per_key must be a number between 0 and 10.");
+            if (bits_per_key_value < 0)
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "The GrafiteFilter bits_per_key must be a positive decimal");
         }
     }
 }
