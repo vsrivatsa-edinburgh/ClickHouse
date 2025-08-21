@@ -45,7 +45,7 @@ std::string extractKeyFromFieldGrafite(const Field & field, const DataTypePtr & 
 std::vector<std::string> extractKeysFromColumnGrafite(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit);
 
 // Convert false positive probability to Grafite parameters
-static GrafiteFilterParameters getGrafiteParameters(double bits_per_key)
+static GrafiteFilterParameters getGrafiteParameters(double bits_per_key = 2.0)
 {
     return GrafiteFilterParameters(bits_per_key);
 }
@@ -64,7 +64,8 @@ MergeTreeIndexGranuleGrafiteFilter::MergeTreeIndexGranuleGrafiteFilter(size_t in
 
 MergeTreeIndexGranuleGrafiteFilter::MergeTreeIndexGranuleGrafiteFilter(
     const std::vector<std::set<std::string>> & column_keys_, double bits_per_key_)
-    : grafite_filters(column_keys_.size())
+    : bits_per_key(bits_per_key_)
+    , grafite_filters(column_keys_.size())
 {
     if (column_keys_.empty())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Column keys empty or total_rows is zero.");
@@ -76,12 +77,18 @@ MergeTreeIndexGranuleGrafiteFilter::MergeTreeIndexGranuleGrafiteFilter(
     total_rows = grafite_filter_max_size;
 
     // Create GrafiteFilter with user-provided parameters
-    GrafiteFilterParameters params = getGrafiteParameters(bits_per_key_);
+    GrafiteFilterParameters params = getGrafiteParameters(bits_per_key);
 
     for (size_t column = 0, columns = column_keys_.size(); column < columns; ++column)
     {
         grafite_filters[column] = std::make_shared<GrafiteFilter>(params);
-        fillingGrafiteFilterWithKeys(grafite_filters[column], column_keys_[column], bits_per_key_);
+        LOG_TRACE(
+            &Poco::Logger::get("GrafiteFilter"),
+            "Initializing grafite_filter[{}] with {} keys (bits_per_key={})",
+            column,
+            column_keys_[column].size(),
+            bits_per_key);
+        fillingGrafiteFilterWithKeys(grafite_filters[column], column_keys_[column], bits_per_key);
     }
 }
 
@@ -98,41 +105,48 @@ size_t MergeTreeIndexGranuleGrafiteFilter::memoryUsageBytes() const
     return sum;
 }
 
-void MergeTreeIndexGranuleGrafiteFilter::deserializeBinary(ReadBuffer & istr, MergeTreeIndexVersion version)
+void MergeTreeIndexGranuleGrafiteFilter::serializeBinary(WriteBuffer & ostr) const
 {
-    if (version != 1)
-        throw Exception(ErrorCodes::LOGICAL_ERROR, "Unknown index version {}.", version);
+    LOG_TRACE(
+        &Poco::Logger::get("GrafiteFilter"),
+        "serializeBinary called: this={} ostr={} grafite_filters.size={} total_rows={}",
+        static_cast<const void *>(this),
+        static_cast<void *>(&ostr),
+        grafite_filters.size(),
+        total_rows);
+    if (empty())
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Attempt to write empty grafite index.");
 
-    readVarUInt(total_rows, istr);
-
-    static size_t atom_size = 8;
-    size_t bytes_size = static_cast<size_t>(std::ceil(bits_per_key * total_rows / static_cast<double>(atom_size)));
-    size_t read_size = bytes_size;
-    for (auto & filter : grafite_filters)
+    for (const auto & filter : grafite_filters)
     {
-        if constexpr (std::endian::native == std::endian::big)
-            read_size = filter->getFilter().size() * sizeof(GrafiteFilter::UnderType);
-        else
-            istr.readStrict(reinterpret_cast<char *>(filter->getFilter().data()), read_size);
+        if (!filter)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Grafite filter is not initialized for index.");
+        // Write the filter size (number of bytes as reported by grafite_->size())
+        // Serialize the filter using the stream operator
+        std::ostringstream oss(std::ios::binary);
+        oss << *(filter->readGrafite());
+        std::string serialized = oss.str();
+        writeBinary(serialized.size(), ostr);
+        ostr.write(serialized.data(), serialized.size());
+        LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Serialized grafite filter: stream bytes={}", serialized.size());
     }
 }
 
-void MergeTreeIndexGranuleGrafiteFilter::serializeBinary(WriteBuffer & ostr) const
+void MergeTreeIndexGranuleGrafiteFilter::deserializeBinary(ReadBuffer & istr, MergeTreeIndexVersion version)
 {
-    if (empty())
-        throw Exception(ErrorCodes::LOGICAL_ERROR, "Attempt to write empty grafite filter index.");
+    LOG_TRACE(
+        &Poco::Logger::get("GrafiteFilter"),
+        "deserializeBinary called: this={} istr={} grafite_filters.size={} version={}",
+        static_cast<void *>(this),
+        static_cast<void *>(&istr),
+        grafite_filters.size(),
+        version);
+    if (version != 1)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Unknown index version {}.", version);
 
-    writeVarUInt(total_rows, ostr);
-
-    static size_t atom_size = 8;
-    int bits_per_key_int = static_cast<int>(bits_per_key);
-    size_t write_size = (bits_per_key_int * total_rows + atom_size - 1) / atom_size;
-    for (const auto & grafite_filter : grafite_filters)
+    for (auto & filter : grafite_filters)
     {
-        if constexpr (std::endian::native == std::endian::big)
-            write_size = sizeof(grafite_filter->getFilter()) * sizeof(GrafiteFilter::UnderType);
-        else
-            ostr.write(reinterpret_cast<const char *>(grafite_filter->getFilter().data()), write_size);
+        filter->buildFromStream(istr);
     }
 }
 
@@ -1102,7 +1116,6 @@ MergeTreeIndexGranulePtr MergeTreeIndexAggregatorGrafiteFilter::getGranuleAndRes
 {
     // Create new Grafite filters for the granule (separate from aggregator's working filters)
     std::vector<GrafiteFilterPtr> granule_filters(grafite_filters.size());
-
     // Sort accumulated keys and create finalized filters for the granule
     for (size_t i = 0; i < grafite_filters.size(); ++i)
     {
@@ -1114,14 +1127,12 @@ MergeTreeIndexGranulePtr MergeTreeIndexAggregatorGrafiteFilter::getGranuleAndRes
             continue;
         }
 
-        // Sort all accumulated keys for this column
-        std::sort(accumulated_keys[i].begin(), accumulated_keys[i].end());
-
         // Create a new Grafite filter for the granule and build it with sorted keys
         GrafiteFilterParameters params = getGrafiteParameters(bits_per_key);
         granule_filters[i] = std::make_shared<GrafiteFilter>(accumulated_keys[i], params);
     }
 
+    LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "getGranuleAndReset: total_rows(before reset)={}", total_rows);
     // Create granule with the finalized filters
     auto granule = std::make_shared<MergeTreeIndexGranuleGrafiteFilter>(index_columns_name.size());
     granule->setFilters(granule_filters);
@@ -1134,6 +1145,7 @@ MergeTreeIndexGranulePtr MergeTreeIndexAggregatorGrafiteFilter::getGranuleAndRes
         accumulated_keys[i].clear();
     }
 
+    LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "getGranuleAndReset: total_rows(after reset)={}", total_rows);
     return granule;
 }
 
@@ -1148,6 +1160,14 @@ void MergeTreeIndexAggregatorGrafiteFilter::update(const Block & block, size_t *
             block.rows());
 
     size_t max_read_rows = std::min(block.rows() - *pos, limit);
+    LOG_TRACE(
+        &Poco::Logger::get("GrafiteFilter"),
+        "update: pos={} limit={} block.rows()={} max_read_rows={} total_rows(before)={}",
+        *pos,
+        limit,
+        block.rows(),
+        max_read_rows,
+        total_rows);
 
     for (size_t column = 0; column < index_columns_name.size(); ++column)
     {
@@ -1184,6 +1204,7 @@ void MergeTreeIndexAggregatorGrafiteFilter::update(const Block & block, size_t *
 
     *pos += max_read_rows;
     total_rows += max_read_rows;
+    LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "update: total_rows(after)={}", total_rows);
 }
 
 MergeTreeIndexGrafiteFilter::MergeTreeIndexGrafiteFilter(const IndexDescription & index_, double bits_per_key_)
@@ -1232,8 +1253,15 @@ MergeTreeIndexPtr grafiteFilterIndexCreator(const IndexDescription & index)
     if (!index.arguments.empty())
     {
         const auto & argument = index.arguments[0];
-        bits_per_key = std::min<double>(10.0, std::max<double>(argument.safeGet<double>(), 0.0)); // Allow 0-10 range
+        bits_per_key = std::min<double>(10.0, std::max<double>(argument.safeGet<double>(), 0.1)); // Allow 0-10 range
     }
+
+    LOG_TRACE(
+        &Poco::Logger::get("GrafiteFilter"),
+        "grafiteFilterIndexCreator called: index.name='{}' arguments.size={} bits_per_key={}",
+        index.name,
+        index.arguments.size(),
+        bits_per_key);
 
     return std::make_shared<MergeTreeIndexGrafiteFilter>(index, bits_per_key);
 }
@@ -1260,5 +1288,4 @@ void grafiteFilterIndexValidator(const IndexDescription & index, bool attach)
         }
     }
 }
-
 }

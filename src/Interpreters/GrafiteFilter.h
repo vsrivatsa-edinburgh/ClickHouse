@@ -34,16 +34,8 @@ public:
     /// Keys must be provided in sorted order
     GrafiteFilter(const std::vector<std::string> & keys, const GrafiteFilterParameters & params);
 
-    /// Destructor - properly clean up Grafite memory
-    ~GrafiteFilter();
-
-    /// Copy constructor and assignment operator are deleted due to unique_ptr
-    GrafiteFilter(const GrafiteFilter &) = delete;
-    GrafiteFilter & operator=(const GrafiteFilter &) = delete;
-
-    /// Move constructor and assignment operator
-    GrafiteFilter(GrafiteFilter &&) = default;
-    GrafiteFilter & operator=(GrafiteFilter &&) = default;
+    // /// Destructor - properly clean up Grafite memory
+    // ~GrafiteFilter();
 
     const Container & getFilter() const { return filter; }
     Container & getFilter() { return filter; }
@@ -57,10 +49,14 @@ public:
     /// Get memory usage in bytes
     size_t memoryUsageBytes() const;
 
+    void buildFromStream(ReadBuffer & istr);
+
+    std::shared_ptr<grafite::filter<grafite::ef_sux_vector, 2u>> readGrafite() { return std::move(grafite_); }
+
 private:
     GrafiteFilterParameters params_;
 
-    std::unique_ptr<grafite::filter<grafite::ef_sux_vector, 2u>> grafite_;
+    std::shared_ptr<grafite::filter<grafite::ef_sux_vector, 2u>> grafite_;
 
     // Helper methods
     void buildFromKeys(const std::vector<std::string> & keys);

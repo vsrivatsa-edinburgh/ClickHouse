@@ -21,9 +21,9 @@ extern const int LOGICAL_ERROR;
 class MergeTreeIndexGranuleGrafiteFilter final : public IMergeTreeIndexGranule
 {
 public:
-    MergeTreeIndexGranuleGrafiteFilter(size_t index_columns_, double bits_per_key_ = 0);
+    MergeTreeIndexGranuleGrafiteFilter(size_t index_columns_, double bits_per_key = 2.0);
 
-    MergeTreeIndexGranuleGrafiteFilter(const std::vector<std::set<std::string>> & column_keys, double bits_per_key_ = 0);
+    MergeTreeIndexGranuleGrafiteFilter(const std::vector<std::set<std::string>> & column_keys, double bits_per_key = 2.0);
 
     bool empty() const override;
 
@@ -38,7 +38,7 @@ public:
 
 private:
     size_t total_rows = 0;
-    double bits_per_key = 0;
+    double bits_per_key;
     std::vector<GrafiteFilterPtr> grafite_filters;
 
     void fillingGrafiteFilterWithKeys(GrafiteFilterPtr & bf, const std::set<std::string> & keys, double bits_per_key_param) const;
@@ -125,7 +125,7 @@ private:
 class MergeTreeIndexAggregatorGrafiteFilter final : public IMergeTreeIndexAggregator
 {
 public:
-    MergeTreeIndexAggregatorGrafiteFilter(const Names & columns_name_, double bits_per_key_ = 0);
+    MergeTreeIndexAggregatorGrafiteFilter(const Names & columns_name_, double bits_per_key = 2.0);
 
     bool empty() const override;
 
@@ -140,7 +140,7 @@ private:
     std::vector<GrafiteFilterPtr> grafite_filters;
     // Accumulate keys for sorting before insertion
     std::vector<std::vector<std::string>> accumulated_keys;
-    double bits_per_key = 0;
+    double bits_per_key = 2.0;
     size_t total_rows = 0;
 };
 
@@ -148,7 +148,7 @@ private:
 class MergeTreeIndexGrafiteFilter final : public IMergeTreeIndex
 {
 public:
-    MergeTreeIndexGrafiteFilter(const IndexDescription & index_, double bits_per_key_ = 0);
+    MergeTreeIndexGrafiteFilter(const IndexDescription & index_, double bits_per_key = 2.0);
 
     MergeTreeIndexGranulePtr createIndexGranule() const override;
 
@@ -157,7 +157,6 @@ public:
     MergeTreeIndexConditionPtr createIndexCondition(const ActionsDAG::Node * predicate, ContextPtr context) const override;
 
 private:
-    double bits_per_key;
+    double bits_per_key = 2.0;
 };
-
 }

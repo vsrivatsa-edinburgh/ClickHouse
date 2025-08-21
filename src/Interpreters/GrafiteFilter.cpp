@@ -5,6 +5,7 @@
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeNullable.h>
 #include <IO/ReadBuffer.h>
+#include <IO/ReadHelpers.h>
 #include <IO/VarInt.h>
 #include <IO/WriteBuffer.h>
 #include <Interpreters/GrafiteFilter.h>
@@ -31,14 +32,19 @@ extern const int LOGICAL_ERROR;
 GrafiteFilterParameters::GrafiteFilterParameters(double bits_per_key_)
     : bits_per_key(bits_per_key_)
 {
-    if (bits_per_key_ <= 0)
-        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Bits per key must be positive");
+    if (bits_per_key <= 0.0)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Bits per key mustt be positive, not {}", bits_per_key);
 }
 
 GrafiteFilter::GrafiteFilter(const GrafiteFilterParameters & params)
     : params_(params)
     , grafite_(nullptr)
 {
+    LOG_TRACE(
+        getLogger("GrafiteFilter"),
+        "GrafiteFilter ctor (empty): this={} bits_per_key={}",
+        static_cast<const void *>(this),
+        params.bits_per_key);
     // Initialize empty Grafite - will be created when needed
 }
 
@@ -46,10 +52,17 @@ GrafiteFilter::GrafiteFilter(const std::vector<std::string> & keys, const Grafit
     : params_(params)
     , grafite_(nullptr)
 {
+    LOG_TRACE(
+        getLogger("GrafiteFilter"),
+        "GrafiteFilter ctor (with keys): this={} keys.size={} bits_per_key={}",
+        static_cast<const void *>(this),
+        keys.size(),
+        params.bits_per_key);
     buildFromKeys(keys);
 }
 
-GrafiteFilter::~GrafiteFilter() = default;
+// GrafiteFilter::~GrafiteFilter() = default;
+// dtor: no log needed
 
 bool GrafiteFilter::lookupKey(const std::string & key) const
 {
@@ -65,6 +78,14 @@ bool GrafiteFilter::lookupKey(const std::string & key) const
 bool GrafiteFilter::lookupRange(
     const std::string & left_key, bool left_inclusive, const std::string & right_key, bool right_inclusive) const
 {
+    LOG_TRACE(
+        getLogger("GrafiteFilter"),
+        "lookupRange: this={} left_key='{}' left_inclusive={} right_key='{}' right_inclusive={}",
+        static_cast<const void *>(this),
+        left_key,
+        left_inclusive,
+        right_key,
+        right_inclusive);
     if (!grafite_)
         return false; // Not ready for lookups
 
@@ -86,10 +107,49 @@ size_t GrafiteFilter::memoryUsageBytes() const
     return sizeof(GrafiteFilter);
 }
 
+void GrafiteFilter::buildFromStream(ReadBuffer & istr)
+{
+    std::vector<uint64_t> dummy_keys;
+    double bits_per_key = params_.bits_per_key; // or whatever is appropriate
+    grafite_ = std::make_shared<grafite::filter<grafite::ef_sux_vector, 2u>>(dummy_keys.begin(), dummy_keys.end(), bits_per_key);
+    if (!grafite_)
+    {
+        LOG_TRACE(getLogger("GrafiteFilter"), "buildFromStream: grafite_ is null before deserialization");
+    }
+    else
+    {
+        LOG_TRACE(getLogger("GrafiteFilter"), "buildFromStream: grafite_ points to {}", static_cast<const void *>(grafite_.get()));
+    }
+    LOG_TRACE(
+        getLogger("GrafiteFilter"), "buildFromStream called: this={} istr={}", static_cast<const void *>(this), static_cast<void *>(&istr));
+
+    size_t filter_size = 0;
+    readBinary(filter_size, istr);
+    LOG_TRACE(getLogger("GrafiteFilter"), "Reading Grafite filter of size {} bytes", filter_size);
+
+    if (filter_size == 0)
+        return;
+
+    std::string serialized;
+    serialized.resize(filter_size);
+    istr.readStrict(serialized.data(), filter_size);
+    std::istringstream iss(serialized, std::ios::binary);
+    iss.seekg(0, std::ios::end);
+    std::streamsize iss_length = iss.tellg();
+    iss.seekg(0, std::ios::beg);
+    LOG_TRACE(getLogger("GrafiteFilter"), "buildFromStream: iss_length={}", iss_length);
+
+    iss >> *grafite_;
+    LOG_TRACE(getLogger("GrafiteFilter"), "buildFromStream: deserialization complete");
+}
+
 void GrafiteFilter::buildFromKeys(const std::vector<std::string> & keys)
 {
     std::vector<uint64_t> int_keys;
     int_keys.reserve(keys.size());
+
+    // Sort the keys before inserting for better filter performance
+    std::sort(int_keys.begin(), int_keys.end());
 
     for (size_t i = 0; i < keys.size(); ++i)
     {
@@ -102,11 +162,18 @@ void GrafiteFilter::buildFromKeys(const std::vector<std::string> & keys)
     if (keys.size() > 10)
         LOG_TRACE(getLogger("GrafiteFilter"), "... and {} more keys", keys.size() - 10);
 
-    // Sort the keys before inserting for better filter performance
-    std::sort(int_keys.begin(), int_keys.end());
-
     // Create Grafite with the casted keys using bits per key from params
     grafite_ = std::make_unique<grafite::filter<grafite::ef_sux_vector, 2u>>(int_keys.begin(), int_keys.end(), params_.bits_per_key);
+
+    // Populate the filter vector with the correct number of elements (not bytes)
+    if (grafite_)
+    {
+        // grafite_->size() returns bytes, so divide by sizeof(UnderType) to get element count
+        size_t data_bytes = grafite_->size();
+        size_t data_elems = data_bytes / sizeof(UnderType);
+        filter.resize(data_bytes);
+        LOG_TRACE(getLogger("GrafiteFilter"), "Populated filter vector with {} elements ({} bytes) from grafite_", data_elems, data_bytes);
+    }
 }
 
 DataTypePtr GrafiteFilter::getPrimitiveType(const DataTypePtr & data_type)
@@ -140,5 +207,4 @@ ColumnPtr GrafiteFilter::getPrimitiveColumn(const ColumnPtr & column)
 
     return column;
 }
-
 }
