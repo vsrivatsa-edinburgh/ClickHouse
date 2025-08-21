@@ -41,7 +41,7 @@ private:
     double bits_per_key = 0;
     std::vector<GrafiteFilterPtr> grafite_filters;
 
-    void fillingGrafiteFilterWithKeys(GrafiteFilterPtr & bf, const std::set<std::string> & keys, double bits_per_key) const;
+    void fillingGrafiteFilterWithKeys(GrafiteFilterPtr & bf, const std::set<std::string> & keys, double bits_per_key_param) const;
 };
 
 class MergeTreeIndexConditionGrafiteFilter final : public IMergeTreeIndexCondition, WithContext

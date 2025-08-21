@@ -56,8 +56,9 @@ bool GrafiteFilter::lookupKey(const std::string & key) const
     if (!grafite_)
         return false; // Not ready for lookups
 
-    // Cast string pointer to int directly since keys are stringified integers
-    int int_value = static_cast<int>(reinterpret_cast<uintptr_t>(key.c_str()));
+    // Cast string pointer to uint64_t directly since keys are stringified integers
+    uint64_t int_value = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(key.c_str()));
+    // (void)int_value; // Suppress unused variable warning
     return grafite_->query(int_value, int_value);
 }
 
@@ -67,16 +68,14 @@ bool GrafiteFilter::lookupRange(
     if (!grafite_)
         return false; // Not ready for lookups
 
-    int left_int = static_cast<int>(reinterpret_cast<uintptr_t>(left_key.c_str()));
-    int right_int = static_cast<int>(reinterpret_cast<uintptr_t>(right_key.c_str()));
-
+    uint64_t left_int = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(left_key.c_str()));
+    uint64_t right_int = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(right_key.c_str()));
     if (left_inclusive && right_inclusive)
         return grafite_->query(left_int, right_int);
     else if (left_inclusive)
         return grafite_->query(left_int, right_int - 1);
     else if (right_inclusive)
         return grafite_->query(left_int + 1, right_int);
-
     return grafite_->query(left_int, right_int);
 }
 
@@ -89,15 +88,15 @@ size_t GrafiteFilter::memoryUsageBytes() const
 
 void GrafiteFilter::buildFromKeys(const std::vector<std::string> & keys)
 {
-    std::vector<int> int_keys;
+    std::vector<uint64_t> int_keys;
     int_keys.reserve(keys.size());
 
     for (size_t i = 0; i < keys.size(); ++i)
     {
         if (i < 10)
             LOG_TRACE(getLogger("GrafiteFilter"), "Inserting key[{}]: '{}'", i, keys[i]);
-        // Cast string pointer to int directly since keys are stringified integers
-        int_keys.push_back(static_cast<int>(reinterpret_cast<uintptr_t>(keys[i].c_str())));
+        // Cast string pointer to uint64_t directly since keys are stringified integers
+        int_keys.push_back(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(keys[i].c_str())));
     }
 
     if (keys.size() > 10)
@@ -107,7 +106,7 @@ void GrafiteFilter::buildFromKeys(const std::vector<std::string> & keys)
     std::sort(int_keys.begin(), int_keys.end());
 
     // Create Grafite with the casted keys using bits per key from params
-    grafite_ = std::make_unique<grafite::filter<int>>(int_keys.begin(), int_keys.end(), params_.bits_per_key);
+    grafite_ = std::make_unique<grafite::filter<grafite::ef_sux_vector, 2u>>(int_keys.begin(), int_keys.end(), params_.bits_per_key);
 }
 
 DataTypePtr GrafiteFilter::getPrimitiveType(const DataTypePtr & data_type)

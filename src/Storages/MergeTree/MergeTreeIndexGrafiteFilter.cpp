@@ -41,8 +41,8 @@ extern const int LOGICAL_ERROR;
 }
 
 // Forward declarations for key extraction functions
-std::string extractKeyFromField(const Field & field, const DataTypePtr & data_type);
-std::vector<std::string> extractKeysFromColumn(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit);
+std::string extractKeyFromFieldGrafite(const Field & field, const DataTypePtr & data_type);
+std::vector<std::string> extractKeysFromColumnGrafite(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit);
 
 // Convert false positive probability to Grafite parameters
 static GrafiteFilterParameters getGrafiteParameters(double bits_per_key)
@@ -63,7 +63,7 @@ MergeTreeIndexGranuleGrafiteFilter::MergeTreeIndexGranuleGrafiteFilter(size_t in
 }
 
 MergeTreeIndexGranuleGrafiteFilter::MergeTreeIndexGranuleGrafiteFilter(
-    const std::vector<std::set<std::string>> & column_keys_, double bits_per_key)
+    const std::vector<std::set<std::string>> & column_keys_, double bits_per_key_)
     : grafite_filters(column_keys_.size())
 {
     if (column_keys_.empty())
@@ -76,12 +76,12 @@ MergeTreeIndexGranuleGrafiteFilter::MergeTreeIndexGranuleGrafiteFilter(
     total_rows = grafite_filter_max_size;
 
     // Create GrafiteFilter with user-provided parameters
-    GrafiteFilterParameters params = getGrafiteParameters(bits_per_key);
+    GrafiteFilterParameters params = getGrafiteParameters(bits_per_key_);
 
     for (size_t column = 0, columns = column_keys_.size(); column < columns; ++column)
     {
         grafite_filters[column] = std::make_shared<GrafiteFilter>(params);
-        fillingGrafiteFilterWithKeys(grafite_filters[column], column_keys_[column], bits_per_key);
+        fillingGrafiteFilterWithKeys(grafite_filters[column], column_keys_[column], bits_per_key_);
     }
 }
 
@@ -110,7 +110,6 @@ void MergeTreeIndexGranuleGrafiteFilter::deserializeBinary(ReadBuffer & istr, Me
     size_t read_size = bytes_size;
     for (auto & filter : grafite_filters)
     {
-        filter->resize(bytes_size);
         if constexpr (std::endian::native == std::endian::big)
             read_size = filter->getFilter().size() * sizeof(GrafiteFilter::UnderType);
         else
@@ -126,25 +125,26 @@ void MergeTreeIndexGranuleGrafiteFilter::serializeBinary(WriteBuffer & ostr) con
     writeVarUInt(total_rows, ostr);
 
     static size_t atom_size = 8;
-    size_t write_size = (bits_per_key * total_rows + atom_size - 1) / atom_size;
+    int bits_per_key_int = static_cast<int>(bits_per_key);
+    size_t write_size = (bits_per_key_int * total_rows + atom_size - 1) / atom_size;
     for (const auto & grafite_filter : grafite_filters)
     {
         if constexpr (std::endian::native == std::endian::big)
-            write_size = grafite_filter.size() * sizeof(GrafiteFilter::UnderType);
+            write_size = sizeof(grafite_filter->getFilter()) * sizeof(GrafiteFilter::UnderType);
         else
             ostr.write(reinterpret_cast<const char *>(grafite_filter->getFilter().data()), write_size);
     }
 }
 
 void MergeTreeIndexGranuleGrafiteFilter::fillingGrafiteFilterWithKeys(
-    GrafiteFilterPtr & grafite_filter, const std::set<std::string> & keys, double bits_per_key) const
+    GrafiteFilterPtr & grafite_filter, const std::set<std::string> & keys, double bits_per_key_param) const
 {
     if (keys.empty())
         return;
 
     // Convert std::set to std::vector for Grafite construction (keys are already sorted)
     std::vector<std::string> keys_vector(keys.begin(), keys.end());
-    GrafiteFilterParameters params = getGrafiteParameters(bits_per_key);
+    GrafiteFilterParameters params = getGrafiteParameters(bits_per_key_param);
     *grafite_filter = GrafiteFilter(keys_vector, params);
 }
 
@@ -230,14 +230,14 @@ bool keyMatchesRangeFilter(
 //     {
 //         // Single constant value
 //         Field field = const_column->getField();
-//         std::string key = extractKeyFromField(field, data_type);
+//         std::string key = extractKeyFromFieldGrafite(field, data_type);
 //         return keyMatchesFilter(grafite_filter, key);
 //     }
 
 //     // Multiple values - extract keys from the column
 //     // Create a temporary ColumnPtr by cloning the column since we need a proper ColumnPtr
 //     ColumnPtr column_ptr = column->cloneResized(column->size());
-//     auto keys = extractKeysFromColumn(column_ptr, data_type, 0, column->size());
+//     auto keys = extractKeysFromColumnGrafite(column_ptr, data_type, 0, column->size());
 
 //     if (match_all)
 //     {
@@ -274,7 +274,7 @@ bool maybeTrueOnGrafiteFilter(const IColumn * hash_column, const GrafiteFilterPt
 }
 
 // Simple key extraction functions for Grafite
-std::string extractKeyFromField(const Field & field, const DataTypePtr & data_type)
+std::string extractKeyFromFieldGrafite(const Field & field, const DataTypePtr & data_type)
 {
     WhichDataType which(data_type);
 
@@ -299,7 +299,7 @@ std::string extractKeyFromField(const Field & field, const DataTypePtr & data_ty
     return field.dump();
 }
 
-std::vector<std::string> extractKeysFromColumn(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit)
+std::vector<std::string> extractKeysFromColumnGrafite(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit)
 {
     std::vector<std::string> keys;
     keys.reserve(limit);
@@ -354,7 +354,7 @@ std::vector<std::string> extractKeysFromColumn(const ColumnPtr & column, const D
     {
         Field field;
         column->get(i, field);
-        keys.push_back(extractKeyFromField(field, data_type));
+        keys.push_back(extractKeyFromFieldGrafite(field, data_type));
     }
 
     return keys;
@@ -1156,7 +1156,7 @@ void MergeTreeIndexAggregatorGrafiteFilter::update(const Block & block, size_t *
         // Extract actual keys and accumulate them for later sorted insertion
         try
         {
-            auto keys = extractKeysFromColumn(column_and_type.column, column_and_type.type, *pos, max_read_rows);
+            auto keys = extractKeysFromColumnGrafite(column_and_type.column, column_and_type.type, *pos, max_read_rows);
 
             // Accumulate keys for later sorting and insertion
             for (const auto & key : keys)
@@ -1186,7 +1186,7 @@ void MergeTreeIndexAggregatorGrafiteFilter::update(const Block & block, size_t *
     total_rows += max_read_rows;
 }
 
-MergeTreeIndexGrafiteFilter::MergeTreeIndexGrafiteFilter(const IndexDescription & index_, int bits_per_key_)
+MergeTreeIndexGrafiteFilter::MergeTreeIndexGrafiteFilter(const IndexDescription & index_, double bits_per_key_)
     : IMergeTreeIndex(index_)
     , bits_per_key(bits_per_key_)
 {

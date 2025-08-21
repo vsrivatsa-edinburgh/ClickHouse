@@ -25,6 +25,9 @@ struct GrafiteFilterParameters
 class GrafiteFilter
 {
 public:
+    using UnderType = UInt64;
+    using Container = std::vector<UnderType>;
+
     explicit GrafiteFilter(const GrafiteFilterParameters & params);
 
     /// Constructor for building Grafite from a sorted list of keys
@@ -42,6 +45,9 @@ public:
     GrafiteFilter(GrafiteFilter &&) = default;
     GrafiteFilter & operator=(GrafiteFilter &&) = default;
 
+    const Container & getFilter() const { return filter; }
+    Container & getFilter() { return filter; }
+
     /// Point lookup - returns true if key might exist (may have false positives)
     bool lookupKey(const std::string & key) const;
 
@@ -54,10 +60,12 @@ public:
 private:
     GrafiteFilterParameters params_;
 
-    std::unique_ptr<grafite::filter<int>> grafite_;
+    std::unique_ptr<grafite::filter<grafite::ef_sux_vector, 2u>> grafite_;
 
     // Helper methods
     void buildFromKeys(const std::vector<std::string> & keys);
+
+    Container filter;
 
 public:
     static ColumnPtr getPrimitiveColumn(const ColumnPtr & column);

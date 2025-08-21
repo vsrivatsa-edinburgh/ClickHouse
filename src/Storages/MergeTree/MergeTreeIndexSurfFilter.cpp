@@ -13,13 +13,13 @@
 #include <Interpreters/SurfFilterHash.h>
 #include <Interpreters/castColumn.h>
 #include <Interpreters/convertFieldToType.h>
-#include <fmt/format.h>
 #include <Interpreters/misc.h>
 #include <Parsers/ASTIdentifier.h>
 #include <Parsers/ASTSubquery.h>
 #include <Storages/MergeTree/MergeTreeData.h>
 #include <Storages/MergeTree/RPNBuilder.h>
 #include <base/unaligned.h>
+#include <fmt/format.h>
 #include <Common/FieldAccurateComparison.h>
 #include <Common/logger_useful.h>
 
@@ -40,8 +40,8 @@ extern const int LOGICAL_ERROR;
 }
 
 // Forward declarations for key extraction functions
-std::string extractKeyFromField(const Field & field, const DataTypePtr & data_type);
-std::vector<std::string> extractKeysFromColumn(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit);
+std::string extractKeyFromFieldSurf(const Field & field, const DataTypePtr & data_type);
+std::vector<std::string> extractKeysFromColumnSurf(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit);
 
 // Convert false positive probability to SuRF parameters
 static SurfFilterParameters getSurfParameters(int variant)
@@ -245,14 +245,14 @@ bool keyMatchesRangeFilter(
 //     {
 //         // Single constant value
 //         Field field = const_column->getField();
-//         std::string key = extractKeyFromField(field, data_type);
+//         std::string key = extractKeyFromFieldSurf(field, data_type);
 //         return keyMatchesFilter(surf_filter, key);
 //     }
 
 //     // Multiple values - extract keys from the column
 //     // Create a temporary ColumnPtr by cloning the column since we need a proper ColumnPtr
 //     ColumnPtr column_ptr = column->cloneResized(column->size());
-//     auto keys = extractKeysFromColumn(column_ptr, data_type, 0, column->size());
+//     auto keys = extractKeysFromColumnSurf(column_ptr, data_type, 0, column->size());
 
 //     if (match_all)
 //     {
@@ -288,7 +288,7 @@ bool maybeTrueOnSurfFilter(const IColumn * hash_column, const SurfFilterPtr & su
 }
 
 // Simple key extraction functions for SuRF
-std::string extractKeyFromField(const Field & field, const DataTypePtr & data_type)
+std::string extractKeyFromFieldSurf(const Field & field, const DataTypePtr & data_type)
 {
     WhichDataType which(data_type);
 
@@ -324,7 +324,7 @@ std::string extractKeyFromField(const Field & field, const DataTypePtr & data_ty
     return field.dump();
 }
 
-std::vector<std::string> extractKeysFromColumn(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit)
+std::vector<std::string> extractKeysFromColumnSurf(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit)
 {
     std::vector<std::string> keys;
     keys.reserve(limit);
@@ -379,7 +379,7 @@ std::vector<std::string> extractKeysFromColumn(const ColumnPtr & column, const D
     {
         Field field;
         column->get(i, field);
-        keys.push_back(extractKeyFromField(field, data_type));
+        keys.push_back(extractKeyFromFieldSurf(field, data_type));
     }
 
     return keys;
@@ -437,15 +437,15 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
             || element.function == RPNElement::FUNCTION_GREATER_OR_EQUALS || element.function == RPNElement::FUNCTION_LESS
             || element.function == RPNElement::FUNCTION_LESS_OR_EQUALS)
         {
-            bool match_rows = false;  // Start with false for OR operations (IN), true for AND operations (HAS_ALL)
+            bool match_rows = false; // Start with false for OR operations (IN), true for AND operations (HAS_ALL)
             bool match_all = element.function == RPNElement::FUNCTION_HAS_ALL;
             bool is_in_operation = element.function == RPNElement::FUNCTION_IN || element.function == RPNElement::FUNCTION_NOT_IN;
-            
+
             if (match_all)
-                match_rows = true;  // For AND operations, start with true
-            
+                match_rows = true; // For AND operations, start with true
+
             const auto & predicate = element.predicate;
-            
+
             for (size_t index = 0; index < predicate.size(); ++index)
             {
                 const auto & query_index_hash = predicate[index];
@@ -493,21 +493,21 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
                 {
                     current_match = maybeTrueOnSurfFilter(&*key_column, filter, match_all);
                 }
-                
+
                 // Update match_rows based on operation type
                 if (match_all)
                 {
                     // AND operation: all must match
                     match_rows = match_rows && current_match;
                     if (!match_rows)
-                        break;  // Early exit for AND operations
+                        break; // Early exit for AND operations
                 }
                 else
                 {
                     // OR operation: any can match
                     match_rows = match_rows || current_match;
                     if (match_rows && is_in_operation)
-                        break;  // Early exit for IN operations when we find a match
+                        break; // Early exit for IN operations when we find a match
                 }
             }
 
@@ -672,7 +672,7 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeIn(
         size_t position = header.getPositionByName(key_node_column_name);
         const DataTypePtr & index_type = header.getByPosition(position).type;
         const auto & converted_column = castColumn(ColumnWithTypeAndName{column, type, ""}, index_type);
-        
+
         // For IN operations, we need to create key columns for each value in the set
         if (function_name == "in" || function_name == "globalIn" || function_name == "notIn" || function_name == "globalNotIn")
         {
@@ -787,7 +787,7 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeIn(
                 const auto & array_type = assert_cast<const DataTypeArray &>(*index_type);
                 const auto & array_nested_type = array_type.getNestedType();
                 const auto & converted_column = castColumn(ColumnWithTypeAndName{column, type, ""}, array_nested_type);
-                
+
                 // For IN operations, create key columns for each value
                 if (function_name == "in" || function_name == "globalIn" || function_name == "notIn" || function_name == "globalNotIn")
                 {
@@ -1179,7 +1179,7 @@ void MergeTreeIndexAggregatorSurfFilter::update(const Block & block, size_t * po
         // Extract actual keys and accumulate them for later sorted insertion
         try
         {
-            auto keys = extractKeysFromColumn(column_and_type.column, column_and_type.type, *pos, max_read_rows);
+            auto keys = extractKeysFromColumnSurf(column_and_type.column, column_and_type.type, *pos, max_read_rows);
 
             // Accumulate keys for later sorting and insertion
             for (const auto & key : keys)
