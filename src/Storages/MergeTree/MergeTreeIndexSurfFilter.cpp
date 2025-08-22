@@ -237,6 +237,53 @@ bool keyMatchesRangeFilter(
     return result;
 }
 
+bool keyMatchesInRangeFilter(
+    const SurfFilterPtr & surf_filter, const std::vector<std::pair<size_t, ColumnPtr>> & predicate, size_t current_index)
+{
+    LOG_TRACE(
+        &Poco::Logger::get("SurfFilter"),
+        "keyMatchesInRangeFilter called: predicate.size()={}, current_index={}",
+        predicate.size(),
+        current_index);
+
+    // INRANGE requires exactly 2 values: left and right bounds
+    if (predicate.size() < 2 || current_index + 1 >= predicate.size())
+    {
+        LOG_TRACE(&Poco::Logger::get("SurfFilter"), "keyMatchesInRangeFilter: insufficient predicate values");
+        return false;
+    }
+
+    // Extract left bound (current index)
+    const auto & left_column = predicate[current_index].second;
+    const auto * left_string_column = typeid_cast<const ColumnConst *>(left_column.get());
+    std::string left_bound;
+    if (left_string_column)
+    {
+        const auto * inner_left = typeid_cast<const ColumnString *>(&left_string_column->getDataColumn());
+        if (inner_left && inner_left->size() > 0)
+            left_bound = inner_left->getDataAt(0).toString();
+    }
+
+    // Extract right bound (next index)
+    const auto & right_column = predicate[current_index + 1].second;
+    const auto * right_string_column = typeid_cast<const ColumnConst *>(right_column.get());
+    std::string right_bound;
+    if (right_string_column)
+    {
+        const auto * inner_right = typeid_cast<const ColumnString *>(&right_string_column->getDataColumn());
+        if (inner_right && inner_right->size() > 0)
+            right_bound = inner_right->getDataAt(0).toString();
+    }
+
+    LOG_TRACE(&Poco::Logger::get("SurfFilter"), "keyMatchesInRangeFilter: left_bound='{}', right_bound='{}'", left_bound, right_bound);
+
+    // Use SuRF's range query with the closed range [left_bound, right_bound]
+    bool result = surf_filter->lookupRange(left_bound, true, right_bound, true);
+
+    LOG_TRACE(&Poco::Logger::get("SurfFilter"), "keyMatchesInRangeFilter result: {}", result);
+    return result;
+}
+
 // bool maybeTrueOnSurfFilterWithKeys(const IColumn * column, const SurfFilterPtr & surf_filter, const DataTypePtr & data_type, bool match_all)
 // {
 //     const auto * const_column = typeid_cast<const ColumnConst *>(column);
@@ -446,7 +493,29 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
 
             const auto & predicate = element.predicate;
 
-            for (size_t index = 0; index < predicate.size(); ++index)
+            LOG_TRACE(
+                &Poco::Logger::get("SurfFilter"),
+                "Processing RPN element: function={}, predicate.size()={}",
+                static_cast<int>(element.function),
+                predicate.size());
+
+            // Special handling for INRANGE: FUNCTION_IN with exactly 2 predicate values
+            if (element.function == RPNElement::FUNCTION_IN && predicate.size() == 2)
+            {
+                LOG_TRACE(
+                    &Poco::Logger::get("SurfFilter"), "Detected INRANGE pattern: FUNCTION_IN with {} predicates", predicate.size());
+                const auto & filter = filters[predicate[0].first];
+                match_rows = keyMatchesInRangeFilter(filter, predicate, 0);
+                LOG_TRACE(&Poco::Logger::get("SurfFilter"), "INRANGE result: {}", match_rows);
+            }
+            else
+            {
+                LOG_TRACE(
+                    &Poco::Logger::get("SurfFilter"),
+                    "Using standard loop: function={}, predicate.size()={}",
+                    static_cast<int>(element.function),
+                    predicate.size());
+                for (size_t index = 0; index < predicate.size(); ++index)
             {
                 const auto & query_index_hash = predicate[index];
                 const auto & filter = filters[query_index_hash.first];
@@ -509,6 +578,7 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
                     if (match_rows && is_in_operation)
                         break; // Early exit for IN operations when we find a match
                 }
+            }
             }
 
             rpn_stack.emplace_back(match_rows, true);
