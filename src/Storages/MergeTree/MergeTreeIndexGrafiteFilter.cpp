@@ -236,6 +236,53 @@ bool keyMatchesRangeFilter(
     return result;
 }
 
+bool keyMatchesInRangeFilter(
+    const GrafiteFilterPtr & grafite_filter, const std::vector<std::pair<size_t, ColumnPtr>> & predicate, size_t current_index)
+{
+    LOG_TRACE(
+        &Poco::Logger::get("GrafiteFilter"),
+        "keyMatchesInRangeFilter called: predicate.size()={}, current_index={}",
+        predicate.size(),
+        current_index);
+
+    // INRANGE requires exactly 2 values: left and right bounds
+    if (predicate.size() < 2 || current_index + 1 >= predicate.size())
+    {
+        LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "keyMatchesInRangeFilter: insufficient predicate values");
+        return false;
+    }
+
+    // Extract left bound (current index)
+    const auto & left_column = predicate[current_index].second;
+    const auto * left_string_column = typeid_cast<const ColumnConst *>(left_column.get());
+    std::string left_bound;
+    if (left_string_column)
+    {
+        const auto * inner_left = typeid_cast<const ColumnString *>(&left_string_column->getDataColumn());
+        if (inner_left && inner_left->size() > 0)
+            left_bound = inner_left->getDataAt(0).toString();
+    }
+
+    // Extract right bound (next index)
+    const auto & right_column = predicate[current_index + 1].second;
+    const auto * right_string_column = typeid_cast<const ColumnConst *>(right_column.get());
+    std::string right_bound;
+    if (right_string_column)
+    {
+        const auto * inner_right = typeid_cast<const ColumnString *>(&right_string_column->getDataColumn());
+        if (inner_right && inner_right->size() > 0)
+            right_bound = inner_right->getDataAt(0).toString();
+    }
+
+    LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "keyMatchesInRangeFilter: left_bound='{}', right_bound='{}'", left_bound, right_bound);
+
+    // Use Grafite's range query with the closed range [left_bound, right_bound]
+    bool result = grafite_filter->lookupRange(left_bound, true, right_bound, true);
+
+    LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "keyMatchesInRangeFilter result: {}", result);
+    return result;
+}
+
 // bool maybeTrueOnGrafiteFilterWithKeys(const IColumn * column, const GrafiteFilterPtr & grafite_filter, const DataTypePtr & data_type, bool match_all)
 // {
 //     const auto * const_column = typeid_cast<const ColumnConst *>(column);
@@ -435,68 +482,92 @@ bool MergeTreeIndexConditionGrafiteFilter::mayBeTrueOnGranule(const MergeTreeInd
 
             const auto & predicate = element.predicate;
 
-            for (size_t index = 0; index < predicate.size(); ++index)
+            LOG_TRACE(
+                &Poco::Logger::get("GrafiteFilter"),
+                "Processing RPN element: function={}, predicate.size()={}",
+                static_cast<int>(element.function),
+                predicate.size());
+
+            // Special handling for INRANGE: FUNCTION_IN with exactly 2 predicate values
+            if (element.function == RPNElement::FUNCTION_IN)
             {
-                const auto & query_index_hash = predicate[index];
-                const auto & filter = filters[query_index_hash.first];
-                const ColumnPtr & key_column = query_index_hash.second;
-
-                bool current_match = false;
-
-                // Extract key from the key_column
-                const auto * string_column = typeid_cast<const ColumnConst *>(key_column.get());
-                if (string_column)
+                LOG_TRACE(
+                    &Poco::Logger::get("GrafiteFilter"), "Detected INRANGE pattern: FUNCTION_IN with {} predicates", predicate.size());
+                const auto & filter = filters[predicate[0].first];
+                match_rows = keyMatchesInRangeFilter(filter, predicate, 0);
+                LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "INRANGE result: {}", match_rows);
+            }
+            else
+            {
+                LOG_TRACE(
+                    &Poco::Logger::get("GrafiteFilter"),
+                    "Using standard loop: function={}, predicate.size()={}",
+                    static_cast<int>(element.function),
+                    predicate.size());
+                for (size_t index = 0; index < predicate.size(); ++index)
                 {
-                    const auto * inner_string = typeid_cast<const ColumnString *>(&string_column->getDataColumn());
-                    if (inner_string && inner_string->size() > 0)
+                    const auto & query_index_hash = predicate[index];
+                    const auto & filter = filters[query_index_hash.first];
+                    const ColumnPtr & key_column = query_index_hash.second;
+
+                    bool current_match = false;
+
+                    // Extract key from the key_column
+                    const auto * string_column = typeid_cast<const ColumnConst *>(key_column.get());
+                    if (string_column)
                     {
-                        std::string key = inner_string->getDataAt(0).toString();
-
-                        LOG_TRACE(
-                            &Poco::Logger::get("GrafiteFilter"),
-                            "Processing predicate: key='{}', function={}",
-                            key,
-                            static_cast<int>(element.function));
-
-                        // Use range filtering for range operations, exact matching for others
-                        if (element.function == RPNElement::FUNCTION_GREATER || element.function == RPNElement::FUNCTION_GREATER_OR_EQUALS
-                            || element.function == RPNElement::FUNCTION_LESS || element.function == RPNElement::FUNCTION_LESS_OR_EQUALS)
+                        const auto * inner_string = typeid_cast<const ColumnString *>(&string_column->getDataColumn());
+                        if (inner_string && inner_string->size() > 0)
                         {
-                            LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Using range filtering for key='{}'", key);
-                            current_match = keyMatchesRangeFilter(filter, key, element.function);
+                            std::string key = inner_string->getDataAt(0).toString();
+
+                            LOG_TRACE(
+                                &Poco::Logger::get("GrafiteFilter"),
+                                "Processing predicate: key='{}', function={}",
+                                key,
+                                static_cast<int>(element.function));
+
+                            // Use range filtering for range operations, exact matching for others
+                            if (element.function == RPNElement::FUNCTION_GREATER
+                                || element.function == RPNElement::FUNCTION_GREATER_OR_EQUALS
+                                || element.function == RPNElement::FUNCTION_LESS || element.function == RPNElement::FUNCTION_LESS_OR_EQUALS)
+                            {
+                                LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Using range filtering for key='{}'", key);
+                                current_match = keyMatchesRangeFilter(filter, key, element.function);
+                            }
+                            else
+                            {
+                                LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Using exact matching for key='{}'", key);
+                                current_match = keyMatchesFilter(filter, key);
+                            }
+
+                            LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Match result for key='{}': {}", key, current_match);
                         }
                         else
                         {
-                            LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Using exact matching for key='{}'", key);
-                            current_match = keyMatchesFilter(filter, key);
+                            current_match = maybeTrueOnGrafiteFilter(&*key_column, filter, match_all);
                         }
-
-                        LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Match result for key='{}': {}", key, current_match);
                     }
                     else
                     {
                         current_match = maybeTrueOnGrafiteFilter(&*key_column, filter, match_all);
                     }
-                }
-                else
-                {
-                    current_match = maybeTrueOnGrafiteFilter(&*key_column, filter, match_all);
-                }
 
-                // Update match_rows based on operation type
-                if (match_all)
-                {
-                    // AND operation: all must match
-                    match_rows = match_rows && current_match;
-                    if (!match_rows)
-                        break; // Early exit for AND operations
-                }
-                else
-                {
-                    // OR operation: any can match
-                    match_rows = match_rows || current_match;
-                    if (match_rows && is_in_operation)
-                        break; // Early exit for IN operations when we find a match
+                    // Update match_rows based on operation type
+                    if (match_all)
+                    {
+                        // AND operation: all must match
+                        match_rows = match_rows && current_match;
+                        if (!match_rows)
+                            break; // Early exit for AND operations
+                    }
+                    else
+                    {
+                        // OR operation: any can match
+                        match_rows = match_rows || current_match;
+                        if (match_rows && is_in_operation)
+                            break; // Early exit for IN operations when we find a match
+                    }
                 }
             }
 
@@ -592,9 +663,6 @@ bool MergeTreeIndexConditionGrafiteFilter::traverseFunction(
         }
     }
 
-    if (arguments_size != 2)
-        return false;
-
     /// indexOf() should be inside comparison function, e.g. greater(indexOf(key, 42), 0).
     /// Other conditions should be at top level, e.g. equals(key, 42), not equals(equals(key, 42), 1).
     if ((function_name == "indexOf") != (parent != nullptr))
@@ -602,6 +670,12 @@ bool MergeTreeIndexConditionGrafiteFilter::traverseFunction(
 
     auto lhs_argument = function.getArgumentAt(0);
     auto rhs_argument = function.getArgumentAt(1);
+
+    LOG_TRACE(
+        &Poco::Logger::get("GrafiteFilter"), "traverseFunction: function_name='{}', arguments_size={}", function_name, arguments_size);
+
+    if (arguments_size != 2)
+        return false;
 
     if (functionIsInOrGlobalInOperator(function_name))
     {

@@ -69,10 +69,9 @@ bool GrafiteFilter::lookupKey(const std::string & key) const
     if (!grafite_)
         return false; // Not ready for lookups
 
-    // Cast string pointer to uint64_t directly since keys are stringified integers
-    uint64_t int_value = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(key.c_str()));
-    // (void)int_value; // Suppress unused variable warning
-    return grafite_->query(int_value, int_value);
+    // Parse string as integer since keys are stringified integers
+    uint64_t int_value = std::stoull(key);
+    return grafite_->query(int_value);
 }
 
 bool GrafiteFilter::lookupRange(
@@ -89,8 +88,8 @@ bool GrafiteFilter::lookupRange(
     if (!grafite_)
         return false; // Not ready for lookups
 
-    uint64_t left_int = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(left_key.c_str()));
-    uint64_t right_int = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(right_key.c_str()));
+    uint64_t left_int = std::stoull(left_key);
+    uint64_t right_int = std::stoull(right_key);
     if (left_inclusive && right_inclusive)
         return grafite_->query(left_int, right_int);
     else if (left_inclusive)
@@ -155,10 +154,9 @@ void GrafiteFilter::buildFromKeys(const std::vector<std::string> & keys)
     {
         if (i < 10)
             LOG_TRACE(getLogger("GrafiteFilter"), "Inserting key[{}]: '{}'", i, keys[i]);
-        // Cast string pointer to uint64_t directly since keys are stringified integers
-        int_keys.push_back(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(keys[i].c_str())));
+        // Parse string as integer since keys are stringified integers
+        int_keys.push_back(std::stoull(keys[i]));
     }
-
     if (keys.size() > 10)
         LOG_TRACE(getLogger("GrafiteFilter"), "... and {} more keys", keys.size() - 10);
 
