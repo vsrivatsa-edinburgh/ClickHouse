@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-SuRF vs Bloom Filter Performance Evaluation Script - Numeric Point Queries
-
-This script compares the performance of SuRF vs Bloom filters for numeric point queries.
-Uses simple 0-1M numeric data with ID-based equality queries.
-"""
-
 import subprocess
 import random
 import time
@@ -122,7 +115,7 @@ class ClickHouseIndexEvaluator:
             else:
                 print(f"✗ Error dropping table {table_name}")
 
-    def create_surf_table(self, table_name: str, granularity: int) -> bool:
+    def create_grafite_table(self, table_name: str, granularity: int) -> bool:
         """Create table without index for numeric data"""
         create_sql = f"""
         CREATE TABLE {table_name} (
@@ -159,27 +152,27 @@ class ClickHouseIndexEvaluator:
             print(create_sql)
             return False
     
-    def create_surf_index(self, table_name: str, approx_fp_rate: float, table_nonce: str = None) -> float:
-        """Create SuRF index on existing table and measure creation time
+    def create_grafite_index(self, table_name: str, approx_fp_rate: float, table_nonce: str = None) -> float:
+        """Create Grafite index on existing table and measure creation time
         Returns: index creation time in seconds"""
-        print(f"🔄 Creating SuRF index on {table_name}...")
+        print(f"🔄 Creating Grafite index on {table_name}...")
         
         # Step 1: Add the index definition
         create_index_sql = f"""
-        ALTER TABLE {table_name} ADD INDEX idx_id id TYPE surf_filter({approx_fp_rate}) GRANULARITY 1
+        ALTER TABLE {table_name} ADD INDEX idx_id id TYPE grafite_filter({approx_fp_rate}) GRANULARITY 1
         """
         
-        print("📝 Adding SuRF index definition...")
+        print("📝 Adding Grafite index definition...")
         result, success = self.execute_query(create_index_sql)
         
         if not success:
-            print(f"✗ Error adding SuRF index definition: {result}")
+            print(f"✗ Error adding Grafite index definition: {result}")
             return 0.0
         
-        print("✓ SuRF index definition added")
+        print("✓ Grafite index definition added")
         
         # Step 2: Materialize the index and measure the time
-        print("⏱️ Starting SuRF index materialization timing...")
+        print("⏱️ Starting Grafite index materialization timing...")
         
         # Record start time for measuring materialization
         start_time = time.time()
@@ -195,7 +188,7 @@ class ClickHouseIndexEvaluator:
         end_time = time.time()
         
         if not success:
-            print(f"✗ Error materializing SuRF index: {result}")
+            print(f"✗ Error materializing Grafite index: {result}")
             return 0.0
         
         # Calculate materialization time
@@ -208,7 +201,7 @@ class ClickHouseIndexEvaluator:
         # Use query_log time if available, otherwise use our measured time
         creation_time = query_log_time if query_log_time > 0 else materialization_time
         
-        print(f"✓ SuRF index materialized in {creation_time:.3f} seconds")
+        print(f"✓ Grafite index materialized in {creation_time:.3f} seconds")
         return creation_time
     
     def create_bloom_index(self, table_name: str, approx_fp_rate: float, table_nonce: str = None) -> float:
@@ -518,7 +511,7 @@ class ClickHouseIndexEvaluator:
         # Look for the new format:
         # Skip
         #   Name: idx_id
-        #   Description: surf_filter GRANULARITY 1
+        #   Description: grafite_filter GRANULARITY 1
         #   Parts: 0/1
         #   Granules: 0/122
         
@@ -716,17 +709,16 @@ class ClickHouseIndexEvaluator:
         
         # Simplified configuration parameters for numeric testing
         configs = [
-            (1, 0.025),
-            (0, 0.025),
-            (2, 0.025),
-            (3, 0.025)
+            (6.0, 0.05),
+            (8.0, 0.05),
+            (10.0, 0.05)
         ]
         
         results = []
         
         for variant, approx_fp_rate in configs:
             config_name = f"appx_fp_{approx_fp_rate}"
-            granularity = 1000
+            granularity = 10000
             
             print(f"\n{'='*60}")
             print(f"🚀 Testing Configuration: {config_name}")
@@ -738,32 +730,32 @@ class ClickHouseIndexEvaluator:
             safe_config_name = config_name.replace('.', '')
             
             # Generate separate nonces for each table to prevent metric pollution
-            surf_nonce = str(uuid.uuid4()).replace('-', '')[:8]
+            grafite_nonce = str(uuid.uuid4()).replace('-', '')[:8]
             bloom_nonce = str(uuid.uuid4()).replace('-', '')[:8]
             
-            surf_table = f"test_surf_{safe_config_name}_{surf_nonce}"
+            grafite_table = f"test_grafite_{safe_config_name}_{grafite_nonce}"
             bloom_table = f"test_bloom_{safe_config_name}_{bloom_nonce}"
             
-            print(f"📋 SuRF table: {surf_table}")
+            print(f"📋 Grafite table: {grafite_table}")
             print(f"📋 Bloom table: {bloom_table}")
             
             # Step 1: Delete existing tables
-            self.delete_tables_if_exist([surf_table, bloom_table])
+            self.delete_tables_if_exist([grafite_table, bloom_table])
             
             # Step 2: Create tables (without indexes)
-            surf_success = self.create_surf_table(surf_table, granularity)
+            grafite_success = self.create_grafite_table(grafite_table, granularity)
             bloom_success = self.create_bloom_table(bloom_table, granularity)
 
-            if not (surf_success and bloom_success):
+            if not (grafite_success and bloom_success):
                 print(f"✗ Failed to create tables for config {config_name}")
                 continue
             
             # Step 3: Insert test data (1 million rows) - same data for both tables
-            self.insert_test_data(surf_table, 1000000)
+            self.insert_test_data(grafite_table, 1000000)
             self.insert_test_data(bloom_table, 1000000)
             
             # Step 4: Create indexes and measure creation time
-            surf_construction_time = self.create_surf_index(surf_table, variant, surf_nonce)
+            grafite_construction_time = self.create_grafite_index(grafite_table, variant, grafite_nonce)
             bloom_construction_time = self.create_bloom_index(bloom_table, approx_fp_rate, bloom_nonce)
             
             # Restart ClickHouse server after data insertion to test persistence
@@ -771,14 +763,14 @@ class ClickHouseIndexEvaluator:
             self.restart_clickhouse_server()
             
             # Generate separate test queries for each table with table-specific nonces
-            surf_test_queries = self.generate_test_queries(50, surf_nonce)
+            grafite_test_queries = self.generate_test_queries(50, grafite_nonce)
             bloom_test_queries = self.generate_test_queries(50, bloom_nonce)
             
-            surf_results = self.run_query_performance_test(surf_table, surf_test_queries, 1, surf_nonce)
+            grafite_results = self.run_query_performance_test(grafite_table, grafite_test_queries, 1, grafite_nonce)
             bloom_results = self.run_query_performance_test(bloom_table, bloom_test_queries, 1, bloom_nonce)
             
             # Get index sizes
-            surf_sizes = self.get_index_sizes(surf_table)
+            grafite_sizes = self.get_index_sizes(grafite_table)
             bloom_sizes = self.get_index_sizes(bloom_table)
             
             # Compile results
@@ -786,10 +778,10 @@ class ClickHouseIndexEvaluator:
                 'config': config_name,
                 'approx_fp_rate': approx_fp_rate,
                 'granularity': granularity,
-                'surf': {
-                    'performance': surf_results,
-                    'sizes': surf_sizes,
-                    'construction_time_seconds': surf_construction_time
+                'grafite': {
+                    'performance': grafite_results,
+                    'sizes': grafite_sizes,
+                    'construction_time_seconds': grafite_construction_time
                 },
                 'bloom': {
                     'performance': bloom_results,
@@ -804,7 +796,7 @@ class ClickHouseIndexEvaluator:
             self.print_config_results(config_results)
             
             # Cleanup tables to save space - DISABLED to keep tables for analysis
-            # self.delete_tables_if_exist([surf_table, bloom_table])
+            # self.delete_tables_if_exist([grafite_table, bloom_table])
         
         # Print final comparison
         self.print_final_results(results)
@@ -814,7 +806,7 @@ class ClickHouseIndexEvaluator:
     def print_config_results(self, config_results: Dict):
         """Print results for a single configuration"""
         config = config_results['config']
-        surf = config_results['surf']
+        grafite = config_results['grafite']
         bloom = config_results['bloom']
         
         print(f"\n📊 Results for {config}:")
@@ -822,38 +814,38 @@ class ClickHouseIndexEvaluator:
         
         # Performance comparison
         print("🚀 Performance Metrics:")
-        surf_latency_ms = surf['performance']['avg_execution_time'] * 1000
+        grafite_latency_ms = grafite['performance']['avg_execution_time'] * 1000
         bloom_latency_ms = bloom['performance']['avg_execution_time'] * 1000
         
-        print(f"  SuRF   - Latency: {surf_latency_ms:.2f}ms, "
-              f"Throughput: {surf['performance']['throughput_qps']:.1f} QPS, "
-              f"Avg Granules: {surf['performance']['avg_granules_examined']:.1f}")
+        print(f"  Grafite   - Latency: {grafite_latency_ms:.2f}ms, "
+              f"Throughput: {grafite['performance']['throughput_qps']:.1f} QPS, "
+              f"Avg Granules: {grafite['performance']['avg_granules_examined']:.1f}")
         print(f"  Bloom  - Latency: {bloom_latency_ms:.2f}ms, "
               f"Throughput: {bloom['performance']['throughput_qps']:.1f} QPS, "
               f"Avg Granules: {bloom['performance']['avg_granules_examined']:.1f}")
         
         # Granule efficiency comparison
         print("\n🎯 Granule Efficiency:")
-        surf_total_granules = surf['performance'].get('total_granules_examined', 0)
+        grafite_total_granules = grafite['performance'].get('total_granules_examined', 0)
         bloom_total_granules = bloom['performance'].get('total_granules_examined', 0)
-        surf_excessive = surf['performance'].get('total_excessive_granules', 0)
+        grafite_excessive = grafite['performance'].get('total_excessive_granules', 0)
         bloom_excessive = bloom['performance'].get('total_excessive_granules', 0)
         
-        print(f"  SuRF   - FP Rate: {surf['performance']['false_positive_rate']:.4f} ({surf_excessive}/{surf_total_granules} excessive/total)")
+        print(f"  Grafite   - FP Rate: {grafite['performance']['false_positive_rate']:.4f} ({grafite_excessive}/{grafite_total_granules} excessive/total)")
         print(f"  Bloom  - FP Rate: {bloom['performance']['false_positive_rate']:.4f} ({bloom_excessive}/{bloom_total_granules} excessive/total)")
         
         # Filtering marks comparison  
         print("\n⚡ Index Filtering Performance:")
-        surf_filtering_avg = surf['performance'].get('avg_filtering_marks_per_query', 0)
+        grafite_filtering_avg = grafite['performance'].get('avg_filtering_marks_per_query', 0)
         bloom_filtering_avg = bloom['performance'].get('avg_filtering_marks_per_query', 0)
-        print(f"  SuRF   - Avg filtering time: {surf_filtering_avg:.1f}μs per query")
+        print(f"  Grafite   - Avg filtering time: {grafite_filtering_avg:.1f}μs per query")
         print(f"  Bloom  - Avg filtering time: {bloom_filtering_avg:.1f}μs per query")
         
         # Size comparison
         print("\n💾 Index Sizes:")
-        if 'total' in surf['sizes']:
-            print(f"  SuRF   - Compressed: {self.format_bytes(surf['sizes']['total']['compressed_bytes'])}, "
-                  f"Uncompressed: {self.format_bytes(surf['sizes']['total']['uncompressed_bytes'])}")
+        if 'total' in grafite['sizes']:
+            print(f"  Grafite   - Compressed: {self.format_bytes(grafite['sizes']['total']['compressed_bytes'])}, "
+                  f"Uncompressed: {self.format_bytes(grafite['sizes']['total']['uncompressed_bytes'])}")
         if 'total' in bloom['sizes']:
             print(f"  Bloom  - Compressed: {self.format_bytes(bloom['sizes']['total']['compressed_bytes'])}, "
                   f"Uncompressed: {self.format_bytes(bloom['sizes']['total']['uncompressed_bytes'])}")
@@ -865,115 +857,115 @@ class ClickHouseIndexEvaluator:
         print(f"{'='*80}")
         
         # Create summary table header (comprehensive performance metrics + index sizes + filtering marks)
-        print(f"{'Config':<20} {'SuRF Lat(ms)':<11} {'Bloom Lat(ms)':<12} {'SuRF QPS':<9} {'Bloom QPS':<10} {'SuRF FP Rate':<11} {'Bloom FP Rate':<12} {'SuRF Gran':<9} {'Bloom Gran':<10} {'SuRF Filt(μs)':<12} {'Bloom Filt(μs)':<14} {'SuRF Comp(KB)':<12} {'SuRF Uncomp(KB)':<14} {'Bloom Comp(KB)':<14} {'Bloom Uncomp(KB)':<16}")
+        print(f"{'Config':<20} {'Grafite Lat(ms)':<11} {'Bloom Lat(ms)':<12} {'Grafite QPS':<9} {'Bloom QPS':<10} {'Grafite FP Rate':<11} {'Bloom FP Rate':<12} {'Grafite Gran':<9} {'Bloom Gran':<10} {'Grafite Filt(μs)':<12} {'Bloom Filt(μs)':<14} {'Grafite Comp(KB)':<12} {'Grafite Uncomp(KB)':<14} {'Bloom Comp(KB)':<14} {'Bloom Uncomp(KB)':<16}")
         print("─" * 230)
         
         # Create summary data
         for result in all_results:
             config = result['config']
-            surf_perf = result['surf']['performance']
+            grafite_perf = result['grafite']['performance']
             bloom_perf = result['bloom']['performance']
-            surf_sizes = result['surf']['sizes']
+            grafite_sizes = result['grafite']['sizes']
             bloom_sizes = result['bloom']['sizes']
             
             # Convert latency from seconds to milliseconds
-            surf_latency_ms = surf_perf['avg_execution_time'] * 1000
+            grafite_latency_ms = grafite_perf['avg_execution_time'] * 1000
             bloom_latency_ms = bloom_perf['avg_execution_time'] * 1000
             
             # Get index sizes in KB (both compressed and uncompressed)
-            surf_comp_kb = surf_sizes.get('total', {}).get('compressed_bytes', 0) / 1024
-            surf_uncomp_kb = surf_sizes.get('total', {}).get('uncompressed_bytes', 0) / 1024
+            grafite_comp_kb = grafite_sizes.get('total', {}).get('compressed_bytes', 0) / 1024
+            grafite_uncomp_kb = grafite_sizes.get('total', {}).get('uncompressed_bytes', 0) / 1024
             bloom_comp_kb = bloom_sizes.get('total', {}).get('compressed_bytes', 0) / 1024
             bloom_uncomp_kb = bloom_sizes.get('total', {}).get('uncompressed_bytes', 0) / 1024
             
             # Get filtering marks average per query
-            surf_filtering_avg = surf_perf.get('avg_filtering_marks_per_query', 0)
+            grafite_filtering_avg = grafite_perf.get('avg_filtering_marks_per_query', 0)
             bloom_filtering_avg = bloom_perf.get('avg_filtering_marks_per_query', 0)
             
             print(f"{config:<20} "
-                  f"{surf_latency_ms:<11.2f} "
+                  f"{grafite_latency_ms:<11.2f} "
                   f"{bloom_latency_ms:<12.2f} "
-                  f"{surf_perf['throughput_qps']:<9.1f} "
+                  f"{grafite_perf['throughput_qps']:<9.1f} "
                   f"{bloom_perf['throughput_qps']:<10.1f} "
-                  f"{surf_perf['false_positive_rate']:<11.4f} "
+                  f"{grafite_perf['false_positive_rate']:<11.4f} "
                   f"{bloom_perf['false_positive_rate']:<12.4f} "
-                  f"{surf_perf['avg_granules_examined']:<9.1f} "
+                  f"{grafite_perf['avg_granules_examined']:<9.1f} "
                   f"{bloom_perf['avg_granules_examined']:<10.1f} "
-                  f"{surf_filtering_avg:<12.1f} "
+                  f"{grafite_filtering_avg:<12.1f} "
                   f"{bloom_filtering_avg:<14.1f} "
-                  f"{surf_comp_kb:<12.1f} "
-                  f"{surf_uncomp_kb:<14.1f} "
+                  f"{grafite_comp_kb:<12.1f} "
+                  f"{grafite_uncomp_kb:<14.1f} "
                   f"{bloom_comp_kb:<14.1f} "
                   f"{bloom_uncomp_kb:<16.1f}")
         
         # Print detailed false positive analysis
         print(f"\n📈 False Positive Ratio Analysis:")
-        print(f"{'Config':<20} {'SuRF Avg FP Ratio':<16} {'Bloom Avg FP Ratio':<18} {'SuRF Max FP Ratio':<16} {'Bloom Max FP Ratio':<18}")
+        print(f"{'Config':<20} {'Grafite Avg FP Ratio':<16} {'Bloom Avg FP Ratio':<18} {'Grafite Max FP Ratio':<16} {'Bloom Max FP Ratio':<18}")
         print("─" * 90)
         
         for result in all_results:
             config = result['config']
-            surf_perf = result['surf']['performance']
+            grafite_perf = result['grafite']['performance']
             bloom_perf = result['bloom']['performance']
             
             print(f"{config:<20} "
-                  f"{surf_perf['avg_false_positive_ratio']:<16.3f} "
+                  f"{grafite_perf['avg_false_positive_ratio']:<16.3f} "
                   f"{bloom_perf['avg_false_positive_ratio']:<18.3f} "
-                  f"{surf_perf['max_false_positive_ratio']:<16.3f} "
+                  f"{grafite_perf['max_false_positive_ratio']:<16.3f} "
                   f"{bloom_perf['max_false_positive_ratio']:<18.3f}")
         
         # Print excessive granule analysis
         print(f"\n🔍 Excessive Granule Analysis:")
-        print(f"{'Config':<20} {'SuRF Total Excessive':<19} {'Bloom Total Excessive':<21} {'SuRF Avg Excessive':<17} {'Bloom Avg Excessive':<19}")
+        print(f"{'Config':<20} {'Grafite Total Excessive':<19} {'Bloom Total Excessive':<21} {'Grafite Avg Excessive':<17} {'Bloom Avg Excessive':<19}")
         print("─" * 100)
         
         for result in all_results:
             config = result['config']
-            surf_perf = result['surf']['performance']
+            grafite_perf = result['grafite']['performance']
             bloom_perf = result['bloom']['performance']
             
             print(f"{config:<20} "
-                  f"{surf_perf['total_excessive_granules']:<19} "
+                  f"{grafite_perf['total_excessive_granules']:<19} "
                   f"{bloom_perf['total_excessive_granules']:<21} "
-                  f"{surf_perf['avg_excessive_granules']:<17.2f} "
+                  f"{grafite_perf['avg_excessive_granules']:<17.2f} "
                   f"{bloom_perf['avg_excessive_granules']:<19.2f}")
         
         # Print index construction time analysis
         print(f"\n⏱️ Index Construction Time Analysis:")
-        print(f"{'Config':<20} {'SuRF Construction (s)':<20} {'Bloom Construction (s)':<22} {'Speedup (Bloom/SuRF)':<20}")
+        print(f"{'Config':<20} {'Grafite Construction (s)':<20} {'Bloom Construction (s)':<22} {'Speedup (Bloom/Grafite)':<20}")
         print("─" * 85)
         
         for result in all_results:
             config = result['config']
-            surf_time = result['surf'].get('construction_time_seconds', 0)
+            grafite_time = result['grafite'].get('construction_time_seconds', 0)
             bloom_time = result['bloom'].get('construction_time_seconds', 0)
-            speedup = bloom_time / surf_time if surf_time > 0 else 0
+            speedup = bloom_time / grafite_time if grafite_time > 0 else 0
             
             print(f"{config:<20} "
-                  f"{surf_time:<20.3f} "
+                  f"{grafite_time:<20.3f} "
                   f"{bloom_time:<22.3f} "
                   f"{speedup:<20.2f}x")
 
         # Save detailed JSON
         session_id = str(uuid.uuid4()).replace('-', '')[:8]
-        json_filename = f"surf_vs_bloom_detailed_{session_id}_{int(time.time())}.json"
+        json_filename = f"grafite_vs_bloom_detailed_{session_id}_{int(time.time())}.json"
         with open(json_filename, 'w') as f:
             json.dump(all_results, f, indent=2, default=str)
         print(f"\n📄 Detailed results saved to {json_filename}")
         print(f"🎯 Session ID: {session_id}")
 
 def main():
-    parser = argparse.ArgumentParser(description='SuRF vs Bloom Filter Performance Evaluation - Numeric Point Queries')
+    parser = argparse.ArgumentParser(description='Grafite vs Bloom Filter Performance Evaluation - Numeric Point Queries')
     parser.add_argument('--client-path', default='./build/programs/clickhouse', 
                        help='Path to ClickHouse client binary')
     
     args = parser.parse_args()
     
-    print("🎯 Starting SuRF vs Bloom Filter Evaluation (Numeric Point Queries)")
+    print("🎯 Starting Grafite vs Bloom Filter Evaluation (Numeric Point Queries)")
     print(f"   Using ClickHouse client: {args.client_path}")
     print("   Test data: 1M rows (0 to 999,999)")
     print("   Query type: Point queries on ID field")
-    print("   Index granularity: 100 (fixed)")
+    print("   Index granularity: 10000 (fixed)")
     
     try:
         evaluator = ClickHouseIndexEvaluator(args.client_path)

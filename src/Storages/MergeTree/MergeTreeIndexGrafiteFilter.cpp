@@ -82,12 +82,6 @@ MergeTreeIndexGranuleGrafiteFilter::MergeTreeIndexGranuleGrafiteFilter(
     for (size_t column = 0, columns = column_keys_.size(); column < columns; ++column)
     {
         grafite_filters[column] = std::make_shared<GrafiteFilter>(params);
-        LOG_TRACE(
-            &Poco::Logger::get("GrafiteFilter"),
-            "Initializing grafite_filter[{}] with {} keys (bits_per_key={})",
-            column,
-            column_keys_[column].size(),
-            bits_per_key);
         fillingGrafiteFilterWithKeys(grafite_filters[column], column_keys_[column], bits_per_key);
     }
 }
@@ -107,13 +101,6 @@ size_t MergeTreeIndexGranuleGrafiteFilter::memoryUsageBytes() const
 
 void MergeTreeIndexGranuleGrafiteFilter::serializeBinary(WriteBuffer & ostr) const
 {
-    LOG_TRACE(
-        &Poco::Logger::get("GrafiteFilter"),
-        "serializeBinary called: this={} ostr={} grafite_filters.size={} total_rows={}",
-        static_cast<const void *>(this),
-        static_cast<void *>(&ostr),
-        grafite_filters.size(),
-        total_rows);
     if (empty())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Attempt to write empty grafite index.");
 
@@ -128,19 +115,11 @@ void MergeTreeIndexGranuleGrafiteFilter::serializeBinary(WriteBuffer & ostr) con
         std::string serialized = oss.str();
         writeBinary(serialized.size(), ostr);
         ostr.write(serialized.data(), serialized.size());
-        LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Serialized grafite filter: stream bytes={}", serialized.size());
     }
 }
 
 void MergeTreeIndexGranuleGrafiteFilter::deserializeBinary(ReadBuffer & istr, MergeTreeIndexVersion version)
 {
-    LOG_TRACE(
-        &Poco::Logger::get("GrafiteFilter"),
-        "deserializeBinary called: this={} istr={} grafite_filters.size={} version={}",
-        static_cast<void *>(this),
-        static_cast<void *>(&istr),
-        grafite_filters.size(),
-        version);
     if (version != 1)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Unknown index version {}.", version);
 
@@ -200,55 +179,39 @@ bool keyMatchesRangeFilter(
     const std::string MIN_BOUND = "0"; // Int32 min
     const std::string MAX_BOUND = "4294967295"; // UInt32 max as upper bound
 
-    LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "keyMatchesRangeFilter called: key='{}', function={}", key, static_cast<int>(function));
-
     bool result = false;
     // For range operations, we use Grafite's range query capabilities
     switch (function)
     {
         case MergeTreeIndexConditionGrafiteFilter::RPNElement::FUNCTION_GREATER:
             // x > key: Look for anything in range (key, MAX_BOUND]
-            LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "FUNCTION_GREATER: lookupRange('{}', false, '{}', true)", key, MAX_BOUND);
             result = grafite_filter->lookupRange(key, false, MAX_BOUND, true);
             break;
         case MergeTreeIndexConditionGrafiteFilter::RPNElement::FUNCTION_GREATER_OR_EQUALS:
             // x >= key: Look for anything in range [key, MAX_BOUND]
-            LOG_TRACE(
-                &Poco::Logger::get("GrafiteFilter"), "FUNCTION_GREATER_OR_EQUALS: lookupRange('{}', true, '{}', true)", key, MAX_BOUND);
             result = grafite_filter->lookupRange(key, true, MAX_BOUND, true);
             break;
         case MergeTreeIndexConditionGrafiteFilter::RPNElement::FUNCTION_LESS:
             // x < key: Look for anything in range [MIN_BOUND, key)
-            LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "FUNCTION_LESS: lookupRange('{}', true, '{}', false)", MIN_BOUND, key);
             result = grafite_filter->lookupRange(MIN_BOUND, true, key, false);
             break;
         case MergeTreeIndexConditionGrafiteFilter::RPNElement::FUNCTION_LESS_OR_EQUALS:
             // x <= key: Look for anything in range [MIN_BOUND, key]
-            LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "FUNCTION_LESS_OR_EQUALS: lookupRange('{}', true, '{}', true)", MIN_BOUND, key);
             result = grafite_filter->lookupRange(MIN_BOUND, true, key, true);
             break;
         default:
-            LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Unknown function: {}", static_cast<int>(function));
             result = false;
     }
 
-    LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "keyMatchesRangeFilter result: {}", result);
     return result;
 }
 
 bool keyMatchesInRangeFilter(
     const GrafiteFilterPtr & grafite_filter, const std::vector<std::pair<size_t, ColumnPtr>> & predicate, size_t current_index)
 {
-    LOG_TRACE(
-        &Poco::Logger::get("GrafiteFilter"),
-        "keyMatchesInRangeFilter called: predicate.size()={}, current_index={}",
-        predicate.size(),
-        current_index);
-
     // INRANGE requires exactly 2 values: left and right bounds
     if (predicate.size() < 2 || current_index + 1 >= predicate.size())
     {
-        LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "keyMatchesInRangeFilter: insufficient predicate values");
         return false;
     }
 
@@ -274,12 +237,9 @@ bool keyMatchesInRangeFilter(
             right_bound = inner_right->getDataAt(0).toString();
     }
 
-    LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "keyMatchesInRangeFilter: left_bound='{}', right_bound='{}'", left_bound, right_bound);
-
     // Use Grafite's range query with the closed range [left_bound, right_bound]
     bool result = grafite_filter->lookupRange(left_bound, true, right_bound, true);
 
-    LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "keyMatchesInRangeFilter result: {}", result);
     return result;
 }
 
@@ -482,28 +442,14 @@ bool MergeTreeIndexConditionGrafiteFilter::mayBeTrueOnGranule(const MergeTreeInd
 
             const auto & predicate = element.predicate;
 
-            LOG_TRACE(
-                &Poco::Logger::get("GrafiteFilter"),
-                "Processing RPN element: function={}, predicate.size()={}",
-                static_cast<int>(element.function),
-                predicate.size());
-
             // Special handling for INRANGE: FUNCTION_IN with exactly 2 predicate values
             if (element.function == RPNElement::FUNCTION_IN)
             {
-                LOG_TRACE(
-                    &Poco::Logger::get("GrafiteFilter"), "Detected INRANGE pattern: FUNCTION_IN with {} predicates", predicate.size());
                 const auto & filter = filters[predicate[0].first];
                 match_rows = keyMatchesInRangeFilter(filter, predicate, 0);
-                LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "INRANGE result: {}", match_rows);
             }
             else
             {
-                LOG_TRACE(
-                    &Poco::Logger::get("GrafiteFilter"),
-                    "Using standard loop: function={}, predicate.size()={}",
-                    static_cast<int>(element.function),
-                    predicate.size());
                 for (size_t index = 0; index < predicate.size(); ++index)
                 {
                     const auto & query_index_hash = predicate[index];
@@ -521,27 +467,18 @@ bool MergeTreeIndexConditionGrafiteFilter::mayBeTrueOnGranule(const MergeTreeInd
                         {
                             std::string key = inner_string->getDataAt(0).toString();
 
-                            LOG_TRACE(
-                                &Poco::Logger::get("GrafiteFilter"),
-                                "Processing predicate: key='{}', function={}",
-                                key,
-                                static_cast<int>(element.function));
-
                             // Use range filtering for range operations, exact matching for others
                             if (element.function == RPNElement::FUNCTION_GREATER
                                 || element.function == RPNElement::FUNCTION_GREATER_OR_EQUALS
                                 || element.function == RPNElement::FUNCTION_LESS || element.function == RPNElement::FUNCTION_LESS_OR_EQUALS)
                             {
-                                LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Using range filtering for key='{}'", key);
                                 current_match = keyMatchesRangeFilter(filter, key, element.function);
                             }
                             else
                             {
-                                LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Using exact matching for key='{}'", key);
                                 current_match = keyMatchesFilter(filter, key);
                             }
 
-                            LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Match result for key='{}': {}", key, current_match);
                         }
                         else
                         {
@@ -670,9 +607,6 @@ bool MergeTreeIndexConditionGrafiteFilter::traverseFunction(
 
     auto lhs_argument = function.getArgumentAt(0);
     auto rhs_argument = function.getArgumentAt(1);
-
-    LOG_TRACE(
-        &Poco::Logger::get("GrafiteFilter"), "traverseFunction: function_name='{}', arguments_size={}", function_name, arguments_size);
 
     if (arguments_size != 2)
         return false;
@@ -1206,7 +1140,6 @@ MergeTreeIndexGranulePtr MergeTreeIndexAggregatorGrafiteFilter::getGranuleAndRes
         granule_filters[i] = std::make_shared<GrafiteFilter>(accumulated_keys[i], params);
     }
 
-    LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "getGranuleAndReset: total_rows(before reset)={}", total_rows);
     // Create granule with the finalized filters
     auto granule = std::make_shared<MergeTreeIndexGranuleGrafiteFilter>(index_columns_name.size());
     granule->setFilters(granule_filters);
@@ -1219,7 +1152,6 @@ MergeTreeIndexGranulePtr MergeTreeIndexAggregatorGrafiteFilter::getGranuleAndRes
         accumulated_keys[i].clear();
     }
 
-    LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "getGranuleAndReset: total_rows(after reset)={}", total_rows);
     return granule;
 }
 
@@ -1234,14 +1166,6 @@ void MergeTreeIndexAggregatorGrafiteFilter::update(const Block & block, size_t *
             block.rows());
 
     size_t max_read_rows = std::min(block.rows() - *pos, limit);
-    LOG_TRACE(
-        &Poco::Logger::get("GrafiteFilter"),
-        "update: pos={} limit={} block.rows()={} max_read_rows={} total_rows(before)={}",
-        *pos,
-        limit,
-        block.rows(),
-        max_read_rows,
-        total_rows);
 
     for (size_t column = 0; column < index_columns_name.size(); ++column)
     {
@@ -1256,7 +1180,6 @@ void MergeTreeIndexAggregatorGrafiteFilter::update(const Block & block, size_t *
             for (const auto & key : keys)
             {
                 accumulated_keys[column].push_back(key);
-                LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Accumulated key for column {}: '{}'", column, key);
             }
         }
         catch (...)
@@ -1271,14 +1194,12 @@ void MergeTreeIndexAggregatorGrafiteFilter::update(const Block & block, size_t *
             {
                 std::string key = std::to_string(hash);
                 accumulated_keys[column].push_back(key);
-                LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "Accumulated hash key for column {}: '{}'", column, key);
             }
         }
     }
 
     *pos += max_read_rows;
     total_rows += max_read_rows;
-    LOG_TRACE(&Poco::Logger::get("GrafiteFilter"), "update: total_rows(after)={}", total_rows);
 }
 
 MergeTreeIndexGrafiteFilter::MergeTreeIndexGrafiteFilter(const IndexDescription & index_, double bits_per_key_)
@@ -1329,13 +1250,6 @@ MergeTreeIndexPtr grafiteFilterIndexCreator(const IndexDescription & index)
         const auto & argument = index.arguments[0];
         bits_per_key = std::max<double>(argument.safeGet<double>(), 0.1); // Allow (0, Inf] range
     }
-
-    LOG_TRACE(
-        &Poco::Logger::get("GrafiteFilter"),
-        "grafiteFilterIndexCreator called: index.name='{}' arguments.size={} bits_per_key={}",
-        index.name,
-        index.arguments.size(),
-        bits_per_key);
 
     return std::make_shared<MergeTreeIndexGrafiteFilter>(index, bits_per_key);
 }

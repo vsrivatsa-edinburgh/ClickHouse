@@ -23,8 +23,9 @@ class ClickHouseIndexEvaluator:
         self.client_path = clickhouse_client_path
         self.server_path = clickhouse_client_path
         self.server_process = None
-        self.nonce = str(uuid.uuid4()).replace('-', '')[:8]  # Generate 8-character nonce
-        print(f"🎯 Evaluation nonce: {self.nonce}")
+        # Remove global nonce - use table-specific nonces instead
+        self.inserted_numbers = set()  # Store inserted numbers for query generation
+        print(f"🎯 ClickHouse Index Evaluator initialized")
         
     def start_clickhouse_server(self):
         """Start ClickHouse server"""
@@ -121,31 +122,29 @@ class ClickHouseIndexEvaluator:
             else:
                 print(f"✗ Error dropping table {table_name}")
 
-    def create_surf_table(self, table_name: str, approx_fp_rate: float, granularity: int) -> bool:
-        """Create table with SuRF indexes for numeric data"""
+    def create_surf_table(self, table_name: str, granularity: int) -> bool:
+        """Create table without index for numeric data"""
         create_sql = f"""
         CREATE TABLE {table_name} (
-            id Int64,
-            INDEX idx_id id TYPE surf_filter({approx_fp_rate}) GRANULARITY 1
+            id Int64
         ) ENGINE = MergeTree()
         ORDER BY ()
         SETTINGS index_granularity = {granularity}
         """
         result, success = self.execute_query(create_sql)
         if success:
-            print(f"✓ Created SuRF table {table_name}")
+            print(f"✓ Created table {table_name} (without index)")
             return True
         else:
-            print(f"✗ Error creating SuRF table {table_name}: {result}")
+            print(f"✗ Error creating table {table_name}: {result}")
             print(create_sql)
             return False
 
-    def create_bloom_table(self, table_name: str, approx_fp_rate: float, granularity: int) -> bool:
-        """Create table with Bloom indexes for numeric data"""
+    def create_bloom_table(self, table_name: str, granularity: int) -> bool:
+        """Create table without index for numeric data"""
         create_sql = f"""
         CREATE TABLE {table_name} (
-            id Int64,
-            INDEX idx_id id TYPE bloom_filter({approx_fp_rate}) GRANULARITY 1
+            id Int64
         ) ENGINE = MergeTree()
         ORDER BY ()
         SETTINGS index_granularity = {granularity}
@@ -153,33 +152,166 @@ class ClickHouseIndexEvaluator:
         
         result, success = self.execute_query(create_sql)
         if success:
-            print(f"✓ Created Bloom table {table_name}")
+            print(f"✓ Created table {table_name} (without index)")
             return True
         else:
-            print(f"✗ Error creating Bloom table {table_name}: {result}")
+            print(f"✗ Error creating table {table_name}: {result}")
             print(create_sql)
             return False
     
+    def create_surf_index(self, table_name: str, approx_fp_rate: float, table_nonce: str = None) -> float:
+        """Create SuRF index on existing table and measure creation time
+        Returns: index creation time in seconds"""
+        print(f"🔄 Creating SuRF index on {table_name}...")
+        
+        # Step 1: Add the index definition
+        create_index_sql = f"""
+        ALTER TABLE {table_name} ADD INDEX idx_id id TYPE surf_filter({approx_fp_rate}) GRANULARITY 1
+        """
+        
+        print("📝 Adding SuRF index definition...")
+        result, success = self.execute_query(create_index_sql)
+        
+        if not success:
+            print(f"✗ Error adding SuRF index definition: {result}")
+            return 0.0
+        
+        print("✓ SuRF index definition added")
+        
+        # Step 2: Materialize the index and measure the time
+        print("⏱️ Starting SuRF index materialization timing...")
+        
+        # Record start time for measuring materialization
+        start_time = time.time()
+        
+        # Add nonce comment to the query for identification in query_log
+        nonce_comment = f" /* index_creation_nonce:{table_nonce} */" if table_nonce else ""
+        
+        materialize_index_sql = f"""
+        ALTER TABLE {table_name} MATERIALIZE INDEX idx_id{nonce_comment}
+        """
+        
+        result, success = self.execute_query(materialize_index_sql)
+        end_time = time.time()
+        
+        if not success:
+            print(f"✗ Error materializing SuRF index: {result}")
+            return 0.0
+        
+        # Calculate materialization time
+        materialization_time = end_time - start_time
+        
+        # Also try to get more precise timing from query_log
+        time.sleep(2)  # Wait for query_log to be updated
+        query_log_time = self.get_index_creation_time_from_query_log(start_time, table_name, table_nonce, "MATERIALIZE INDEX")
+        
+        # Use query_log time if available, otherwise use our measured time
+        creation_time = query_log_time if query_log_time > 0 else materialization_time
+        
+        print(f"✓ SuRF index materialized in {creation_time:.3f} seconds")
+        return creation_time
+    
+    def create_bloom_index(self, table_name: str, approx_fp_rate: float, table_nonce: str = None) -> float:
+        """Create Bloom index on existing table and measure creation time
+        Returns: index creation time in seconds"""
+        print(f"🔄 Creating Bloom index on {table_name}...")
+        
+        # Step 1: Add the index definition
+        create_index_sql = f"""
+        ALTER TABLE {table_name} ADD INDEX idx_id id TYPE bloom_filter({approx_fp_rate}) GRANULARITY 1
+        """
+        
+        print("📝 Adding Bloom index definition...")
+        result, success = self.execute_query(create_index_sql)
+        
+        if not success:
+            print(f"✗ Error adding Bloom index definition: {result}")
+            return 0.0
+        
+        print("✓ Bloom index definition added")
+        
+        # Step 2: Materialize the index and measure the time
+        print("⏱️ Starting Bloom index materialization timing...")
+        
+        # Record start time for measuring materialization
+        start_time = time.time()
+        
+        # Add nonce comment to the query for identification in query_log
+        nonce_comment = f" /* index_creation_nonce:{table_nonce} */" if table_nonce else ""
+        
+        materialize_index_sql = f"""
+        ALTER TABLE {table_name} MATERIALIZE INDEX idx_id{nonce_comment}
+        """
+        
+        result, success = self.execute_query(materialize_index_sql)
+        end_time = time.time()
+        
+        if not success:
+            print(f"✗ Error materializing Bloom index: {result}")
+            return 0.0
+        
+        # Calculate materialization time
+        materialization_time = end_time - start_time
+        
+        # Also try to get more precise timing from query_log
+        time.sleep(2)  # Wait for query_log to be updated
+        query_log_time = self.get_index_creation_time_from_query_log(start_time, table_name, table_nonce, "MATERIALIZE INDEX")
+        
+        # Use query_log time if available, otherwise use our measured time
+        creation_time = query_log_time if query_log_time > 0 else materialization_time
+        
+        print(f"✓ Bloom index materialized in {creation_time:.3f} seconds")
+        return creation_time
+    
     def insert_test_data(self, table_name: str, num_rows: int = 1000000):
-        """Insert numeric data maintaining order for effective data skipping index usage"""
-        print(f"🔄 Inserting {num_rows} numeric rows into {table_name}...")
+        """Insert numeric data from ordered_numbers.txt file using ClickHouse File engine"""
+        print(f"🔄 Inserting {num_rows} numeric rows into {table_name} from ordered_numbers.txt using File engine...")
+        
+        # Load numbers into memory for query generation (only first time)
+        if not hasattr(self, 'inserted_numbers') or not self.inserted_numbers:
+            try:
+                with open('user_files/ordered_numbers.txt', 'r') as f:
+                    numbers = []
+                    for i, line in enumerate(f):
+                        if i >= num_rows:
+                            break
+                        number = int(line.strip())
+                        numbers.append(number)
+                    
+                    # Store numbers in memory for query generation
+                    self.inserted_numbers = set(numbers)
+                    print(f"📋 Loaded {len(numbers)} numbers into memory for query generation")
+                    
+            except FileNotFoundError:
+                print("❌ Error: ordered_numbers.txt file not found in user_files/ directory")
+                return
+            except Exception as e:
+                print(f"❌ Error reading numbers file: {e}")
+                return
+        else:
+            print(f"📋 Using previously loaded {len(self.inserted_numbers)} numbers for query generation")
         
         # Add delay before insertion
         print("⏳ Delay before insertion...")
         time.sleep(2)
         
+        # Create INSERT query using File engine to read directly from file
         insert_query = f"""
-        INSERT INTO {table_name} 
-        SELECT 
-            number as id
-        FROM numbers(1, {num_rows})
+        INSERT INTO {table_name} (id)
+        SELECT toInt64(line) as id
+        FROM file('ordered_numbers.txt', 'LineAsString')
+        LIMIT {num_rows}
         """
         
+        # Execute insert query using ClickHouse File engine
+        print("📤 Inserting data using ClickHouse File engine...")
         result, success = self.execute_query(insert_query)
         
         if not success:
             print(f"✗ Error inserting numbers: {result}")
             return
+        
+        print(f"✓ Data insertion completed using File engine")
         
         # Add delay after insertion
         print("⏳ Delay after insertion...")
@@ -198,23 +330,43 @@ class ClickHouseIndexEvaluator:
         print("💥 Crashing server after insertion to test persistence...")
         time.sleep(1)
     
-    def generate_test_queries(self, num_queries: int = 50) -> List[Tuple[str, int, bool]]:
-        """Generate random point queries for ID equality with metadata"""
+    def generate_test_queries(self, num_queries: int = 50, table_nonce: str = None) -> List[Tuple[str, int, bool]]:
+        """Generate random point queries for ID equality with metadata using stored numbers"""
         queries = []
+        
+        if not self.inserted_numbers:
+            print("⚠️ Warning: No inserted numbers available, generating random queries")
+            # Fallback to random generation if no numbers are stored
+            for _ in range(num_queries):
+                target_id = random.randint(0, 1999999)
+                should_exist = False
+                nonce_comment = f" /* nonce:{table_nonce} */" if table_nonce else ""
+                query = f"SELECT COUNT(*) FROM {{table}} WHERE id = {target_id} SETTINGS force_data_skipping_indices='idx_id'{nonce_comment}"
+                queries.append((query, target_id, should_exist))
+            return queries
+        
+        # Convert set to list for random sampling
+        inserted_list = list(self.inserted_numbers)
+        max_inserted = max(self.inserted_numbers)
+        
         for _ in range(num_queries):
-            # Generate random ID between 0 and 999,999 (existing) or higher (non-existing)
-            if random.random() < 0.5:  # 70% existing IDs
-                target_id = random.randint(0, 999999)
+            if random.random() < 0.5:  # 50% true positives (existing numbers)
+                target_id = random.choice(inserted_list)
                 should_exist = True
-            else:  # 50% non-existing IDs
-                target_id = random.randint(1000000, 1999999)
+            else:  # 50% false positives (non-existing numbers)
+                # Generate a number that's definitely not in the inserted set
+                target_id = max_inserted + random.randint(1, 1000000)
                 should_exist = False
             
-            query = f"SELECT COUNT(*) FROM {{table}} WHERE id = {target_id} SETTINGS force_data_skipping_indices='idx_id' /* nonce:{self.nonce} */"
+            # Use table-specific nonce instead of global nonce
+            nonce_comment = f" /* nonce:{table_nonce} */" if table_nonce else ""
+            query = f"SELECT COUNT(*) FROM {{table}} WHERE id = {target_id} SETTINGS force_data_skipping_indices='idx_id'{nonce_comment}"
             queries.append((query, target_id, should_exist))
+            
+        print(f"📊 Generated {num_queries} queries: {sum(1 for _, _, exists in queries if exists)} true positives, {sum(1 for _, _, exists in queries if not exists)} false positives")
         return queries
     
-    def run_query_performance_test(self, table_name: str, queries: List[Tuple[str, int, bool]], iterations: int = 1) -> Dict:
+    def run_query_performance_test(self, table_name: str, queries: List[Tuple[str, int, bool]], iterations: int = 1, table_nonce: str = None) -> Dict:
         """Run performance test on queries and collect metrics"""
         results = {
             'table_name': table_name,
@@ -223,7 +375,7 @@ class ClickHouseIndexEvaluator:
             'index_usage': {'idx_id': []},
             'granules_examined': [],
             'query_details': [],  # Store detailed results per query
-            'nonce': self.nonce
+            'table_nonce': table_nonce  # Store table-specific nonce instead of global
         }
         
         print(f"🔄 Running {len(queries)} queries {iterations} times on {table_name}...")
@@ -316,7 +468,7 @@ class ClickHouseIndexEvaluator:
         time.sleep(2)
         
         # Get execution times from system.query_log
-        execution_times = self.get_execution_times_from_query_log(batch_start_time, iterations*len(queries), table_name)
+        execution_times = self.get_execution_times_from_query_log(batch_start_time, iterations*len(queries), table_name, table_nonce)
         results['execution_times'] = execution_times
         
         # Calculate aggregated metrics
@@ -433,18 +585,22 @@ class ClickHouseIndexEvaluator:
         print(f"    Returning default result: {default_result}")
         return default_result
 
-    def get_execution_times_from_query_log(self, start_time: float, limit: int, table_name: str) -> List[float]:
-        """Get execution times from system.query_log using nonce filtering"""
+    def get_execution_times_from_query_log(self, start_time: float, limit: int, table_name: str, table_nonce: str = None) -> List[float]:
+        """Get execution times from system.query_log using table-specific nonce filtering"""
         # Convert start_time to ClickHouse format
         start_datetime = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(start_time))
+        
+        # Use table-specific nonce if provided, otherwise fall back to table name only
+        nonce_filter = f" AND query LIKE '%nonce:{table_nonce}%'" if table_nonce else ""
         
         query_log_query = f"""
         SELECT query_duration_ms / 1000.0 as execution_time
         FROM system.query_log 
-        WHERE query LIKE '%nonce:{self.nonce}%' AND query LIKE '%{table_name}%'
+        WHERE query LIKE '%{table_name}%'
           AND type = 'QueryFinish'
           AND event_time >= '{start_datetime}'
           AND query NOT LIKE '%EXPLAIN%'
+          {nonce_filter}
         ORDER BY event_time DESC
         LIMIT {limit}
         """
@@ -462,6 +618,41 @@ class ClickHouseIndexEvaluator:
                         continue
         
         return execution_times
+    
+    def get_index_creation_time_from_query_log(self, start_time: float, table_name: str, table_nonce: str = None, query_type: str = "ADD INDEX") -> float:
+        """Get index creation time from system.query_log using table-specific nonce filtering"""
+        # Convert start_time to ClickHouse format
+        start_datetime = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(start_time))
+        
+        # Use table-specific index creation nonce if provided
+        nonce_filter = f" AND query LIKE '%index_creation_nonce:{table_nonce}%'" if table_nonce else ""
+        
+        # Adjust the query pattern based on query_type
+        if query_type == "MATERIALIZE INDEX":
+            query_pattern = f"ALTER TABLE {table_name} MATERIALIZE INDEX"
+        else:
+            query_pattern = f"ALTER TABLE {table_name} ADD INDEX"
+        
+        query_log_query = f"""
+        SELECT query_duration_ms / 1000.0 as execution_time
+        FROM system.query_log 
+        WHERE query LIKE '%{query_pattern}%'
+          AND type = 'QueryFinish'
+          AND event_time >= '{start_datetime}'
+          {nonce_filter}
+        ORDER BY event_time DESC
+        LIMIT 1
+        """
+        
+        result_output, success = self.execute_query(query_log_query)
+        
+        if success and result_output.strip():
+            try:
+                return float(result_output.strip())
+            except ValueError:
+                return 0.0
+        
+        return 0.0
     
     def get_index_sizes(self, table_name: str) -> Dict:
         """Get index size information"""
@@ -526,8 +717,9 @@ class ClickHouseIndexEvaluator:
         # Simplified configuration parameters for numeric testing
         configs = [
             (1, 0.01),
-            (0, 0.025),
-            (2, 0.05)
+            (0, 0.01),
+            (2, 0.01),
+            (3, 0.01)
         ]
         
         results = []
@@ -544,33 +736,46 @@ class ClickHouseIndexEvaluator:
             
             # Strip dots from config_name for table names
             safe_config_name = config_name.replace('.', '')
-            surf_table = f"test_surf_{safe_config_name}_{self.nonce}"
-            bloom_table = f"test_bloom_{safe_config_name}_{self.nonce}"
+            
+            # Generate separate nonces for each table to prevent metric pollution
+            surf_nonce = str(uuid.uuid4()).replace('-', '')[:8]
+            bloom_nonce = str(uuid.uuid4()).replace('-', '')[:8]
+            
+            surf_table = f"test_surf_{safe_config_name}_{surf_nonce}"
+            bloom_table = f"test_bloom_{safe_config_name}_{bloom_nonce}"
+            
+            print(f"📋 SuRF table: {surf_table}")
+            print(f"📋 Bloom table: {bloom_table}")
             
             # Step 1: Delete existing tables
             self.delete_tables_if_exist([surf_table, bloom_table])
             
-            # Step 2 & 3: Create tables
-            surf_success = self.create_surf_table(surf_table, variant, granularity)
-            bloom_success = self.create_bloom_table(bloom_table, approx_fp_rate, granularity)
+            # Step 2: Create tables (without indexes)
+            surf_success = self.create_surf_table(surf_table, granularity)
+            bloom_success = self.create_bloom_table(bloom_table, granularity)
 
             if not (surf_success and bloom_success):
                 print(f"✗ Failed to create tables for config {config_name}")
                 continue
             
-            # Insert test data (1 million rows)
+            # Step 3: Insert test data (1 million rows) - same data for both tables
             self.insert_test_data(surf_table, 1000000)
             self.insert_test_data(bloom_table, 1000000)
+            
+            # Step 4: Create indexes and measure creation time
+            surf_construction_time = self.create_surf_index(surf_table, variant, surf_nonce)
+            bloom_construction_time = self.create_bloom_index(bloom_table, approx_fp_rate, bloom_nonce)
             
             # Restart ClickHouse server after data insertion to test persistence
             print("🔄 Restarting ClickHouse server after data insertion...")
             self.restart_clickhouse_server()
             
-            # Generate and run test queries (50 random point queries)
-            test_queries = self.generate_test_queries(50)
+            # Generate separate test queries for each table with table-specific nonces
+            surf_test_queries = self.generate_test_queries(50, surf_nonce)
+            bloom_test_queries = self.generate_test_queries(50, bloom_nonce)
             
-            surf_results = self.run_query_performance_test(surf_table, test_queries, 1)
-            bloom_results = self.run_query_performance_test(bloom_table, test_queries, 1)
+            surf_results = self.run_query_performance_test(surf_table, surf_test_queries, 1, surf_nonce)
+            bloom_results = self.run_query_performance_test(bloom_table, bloom_test_queries, 1, bloom_nonce)
             
             # Get index sizes
             surf_sizes = self.get_index_sizes(surf_table)
@@ -583,11 +788,13 @@ class ClickHouseIndexEvaluator:
                 'granularity': granularity,
                 'surf': {
                     'performance': surf_results,
-                    'sizes': surf_sizes
+                    'sizes': surf_sizes,
+                    'construction_time_seconds': surf_construction_time
                 },
                 'bloom': {
                     'performance': bloom_results,
-                    'sizes': bloom_sizes
+                    'sizes': bloom_sizes,
+                    'construction_time_seconds': bloom_construction_time
                 }
             }
             
@@ -596,8 +803,8 @@ class ClickHouseIndexEvaluator:
             # Print intermediate results
             self.print_config_results(config_results)
             
-            # Cleanup tables to save space
-            self.delete_tables_if_exist([surf_table, bloom_table])
+            # Cleanup tables to save space - DISABLED to keep tables for analysis
+            # self.delete_tables_if_exist([surf_table, bloom_table])
         
         # Print final comparison
         self.print_final_results(results)
@@ -731,12 +938,29 @@ class ClickHouseIndexEvaluator:
                   f"{surf_perf['avg_excessive_granules']:<17.2f} "
                   f"{bloom_perf['avg_excessive_granules']:<19.2f}")
         
+        # Print index construction time analysis
+        print(f"\n⏱️ Index Construction Time Analysis:")
+        print(f"{'Config':<20} {'SuRF Construction (s)':<20} {'Bloom Construction (s)':<22} {'Speedup (Bloom/SuRF)':<20}")
+        print("─" * 85)
+        
+        for result in all_results:
+            config = result['config']
+            surf_time = result['surf'].get('construction_time_seconds', 0)
+            bloom_time = result['bloom'].get('construction_time_seconds', 0)
+            speedup = bloom_time / surf_time if surf_time > 0 else 0
+            
+            print(f"{config:<20} "
+                  f"{surf_time:<20.3f} "
+                  f"{bloom_time:<22.3f} "
+                  f"{speedup:<20.2f}x")
+
         # Save detailed JSON
-        json_filename = f"surf_vs_bloom_detailed_{self.nonce}_{int(time.time())}.json"
+        session_id = str(uuid.uuid4()).replace('-', '')[:8]
+        json_filename = f"surf_vs_bloom_detailed_{session_id}_{int(time.time())}.json"
         with open(json_filename, 'w') as f:
             json.dump(all_results, f, indent=2, default=str)
         print(f"\n📄 Detailed results saved to {json_filename}")
-        print(f"🎯 Evaluation nonce: {self.nonce}")
+        print(f"🎯 Session ID: {session_id}")
 
 def main():
     parser = argparse.ArgumentParser(description='SuRF vs Bloom Filter Performance Evaluation - Numeric Point Queries')
@@ -753,7 +977,6 @@ def main():
     
     try:
         evaluator = ClickHouseIndexEvaluator(args.client_path)
-        print(f"   Evaluation ID: {evaluator.nonce}")
         
         # Start ClickHouse server at the beginning
         print("🚀 Starting ClickHouse server...")
@@ -761,7 +984,6 @@ def main():
         
         results = evaluator.run_evaluation()
         print("\n✅ Evaluation completed successfully!")
-        print(f"🎯 Final nonce: {evaluator.nonce}")
         
         # Gracefully stop the server at the end
         print("🛑 Stopping ClickHouse server...")

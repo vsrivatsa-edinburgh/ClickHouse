@@ -202,54 +202,39 @@ bool keyMatchesRangeFilter(
     const std::string MIN_BOUND = ""; // Int32 min
     const std::string MAX_BOUND = "\uffff"; // UInt32 max as upper bound
 
-    LOG_TRACE(&Poco::Logger::get("SurfFilter"), "keyMatchesRangeFilter called: key='{}', function={}", key, static_cast<int>(function));
-
     bool result = false;
     // For range operations, we use SuRF's range query capabilities
     switch (function)
     {
         case MergeTreeIndexConditionSurfFilter::RPNElement::FUNCTION_GREATER:
             // x > key: Look for anything in range (key, MAX_BOUND]
-            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "FUNCTION_GREATER: lookupRange('{}', false, '{}', true)", key, MAX_BOUND);
             result = surf_filter->lookupRange(key, false, MAX_BOUND, true);
             break;
         case MergeTreeIndexConditionSurfFilter::RPNElement::FUNCTION_GREATER_OR_EQUALS:
             // x >= key: Look for anything in range [key, MAX_BOUND]
-            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "FUNCTION_GREATER_OR_EQUALS: lookupRange('{}', true, '{}', true)", key, MAX_BOUND);
             result = surf_filter->lookupRange(key, true, MAX_BOUND, true);
             break;
         case MergeTreeIndexConditionSurfFilter::RPNElement::FUNCTION_LESS:
             // x < key: Look for anything in range [MIN_BOUND, key)
-            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "FUNCTION_LESS: lookupRange('{}', true, '{}', false)", MIN_BOUND, key);
             result = surf_filter->lookupRange(MIN_BOUND, true, key, false);
             break;
         case MergeTreeIndexConditionSurfFilter::RPNElement::FUNCTION_LESS_OR_EQUALS:
             // x <= key: Look for anything in range [MIN_BOUND, key]
-            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "FUNCTION_LESS_OR_EQUALS: lookupRange('{}', true, '{}', true)", MIN_BOUND, key);
             result = surf_filter->lookupRange(MIN_BOUND, true, key, true);
             break;
         default:
-            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Unknown function: {}", static_cast<int>(function));
             result = false;
     }
 
-    LOG_TRACE(&Poco::Logger::get("SurfFilter"), "keyMatchesRangeFilter result: {}", result);
     return result;
 }
 
 bool keyMatchesInRangeFilter(
     const SurfFilterPtr & surf_filter, const std::vector<std::pair<size_t, ColumnPtr>> & predicate, size_t current_index)
 {
-    LOG_TRACE(
-        &Poco::Logger::get("SurfFilter"),
-        "keyMatchesInRangeFilter called: predicate.size()={}, current_index={}",
-        predicate.size(),
-        current_index);
-
     // INRANGE requires exactly 2 values: left and right bounds
     if (predicate.size() < 2 || current_index + 1 >= predicate.size())
     {
-        LOG_TRACE(&Poco::Logger::get("SurfFilter"), "keyMatchesInRangeFilter: insufficient predicate values");
         return false;
     }
 
@@ -275,12 +260,9 @@ bool keyMatchesInRangeFilter(
             right_bound = inner_right->getDataAt(0).toString();
     }
 
-    LOG_TRACE(&Poco::Logger::get("SurfFilter"), "keyMatchesInRangeFilter: left_bound='{}', right_bound='{}'", left_bound, right_bound);
-
     // Use SuRF's range query with the closed range [left_bound, right_bound]
     bool result = surf_filter->lookupRange(left_bound, true, right_bound, true);
 
-    LOG_TRACE(&Poco::Logger::get("SurfFilter"), "keyMatchesInRangeFilter result: {}", result);
     return result;
 }
 
@@ -493,92 +475,70 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
 
             const auto & predicate = element.predicate;
 
-            LOG_TRACE(
-                &Poco::Logger::get("SurfFilter"),
-                "Processing RPN element: function={}, predicate.size()={}",
-                static_cast<int>(element.function),
-                predicate.size());
-
             // Special handling for INRANGE: FUNCTION_IN with exactly 2 predicate values
             if (element.function == RPNElement::FUNCTION_IN && predicate.size() == 2)
             {
-                LOG_TRACE(
-                    &Poco::Logger::get("SurfFilter"), "Detected INRANGE pattern: FUNCTION_IN with {} predicates", predicate.size());
                 const auto & filter = filters[predicate[0].first];
                 match_rows = keyMatchesInRangeFilter(filter, predicate, 0);
-                LOG_TRACE(&Poco::Logger::get("SurfFilter"), "INRANGE result: {}", match_rows);
             }
             else
             {
-                LOG_TRACE(
-                    &Poco::Logger::get("SurfFilter"),
-                    "Using standard loop: function={}, predicate.size()={}",
-                    static_cast<int>(element.function),
-                    predicate.size());
                 for (size_t index = 0; index < predicate.size(); ++index)
-            {
-                const auto & query_index_hash = predicate[index];
-                const auto & filter = filters[query_index_hash.first];
-                const ColumnPtr & key_column = query_index_hash.second;
-
-                bool current_match = false;
-
-                // Extract key from the key_column
-                const auto * string_column = typeid_cast<const ColumnConst *>(key_column.get());
-                if (string_column)
                 {
-                    const auto * inner_string = typeid_cast<const ColumnString *>(&string_column->getDataColumn());
-                    if (inner_string && inner_string->size() > 0)
+                    const auto & query_index_hash = predicate[index];
+                    const auto & filter = filters[query_index_hash.first];
+                    const ColumnPtr & key_column = query_index_hash.second;
+
+                    bool current_match = false;
+
+                    // Extract key from the key_column
+                    const auto * string_column = typeid_cast<const ColumnConst *>(key_column.get());
+                    if (string_column)
                     {
-                        std::string key = inner_string->getDataAt(0).toString();
-
-                        LOG_TRACE(
-                            &Poco::Logger::get("SurfFilter"),
-                            "Processing predicate: key='{}', function={}",
-                            key,
-                            static_cast<int>(element.function));
-
-                        // Use range filtering for range operations, exact matching for others
-                        if (element.function == RPNElement::FUNCTION_GREATER || element.function == RPNElement::FUNCTION_GREATER_OR_EQUALS
-                            || element.function == RPNElement::FUNCTION_LESS || element.function == RPNElement::FUNCTION_LESS_OR_EQUALS)
+                        const auto * inner_string = typeid_cast<const ColumnString *>(&string_column->getDataColumn());
+                        if (inner_string && inner_string->size() > 0)
                         {
-                            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Using range filtering for key='{}'", key);
-                            current_match = keyMatchesRangeFilter(filter, key, element.function);
+                            std::string key = inner_string->getDataAt(0).toString();
+
+                            // Use range filtering for range operations, exact matching for others
+                            if (element.function == RPNElement::FUNCTION_GREATER
+                                || element.function == RPNElement::FUNCTION_GREATER_OR_EQUALS
+                                || element.function == RPNElement::FUNCTION_LESS || element.function == RPNElement::FUNCTION_LESS_OR_EQUALS)
+                            {
+                                current_match = keyMatchesRangeFilter(filter, key, element.function);
+                            }
+                            else
+                            {
+                                current_match = keyMatchesFilter(filter, key);
+                            }
+
                         }
                         else
                         {
-                            LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Using exact matching for key='{}'", key);
-                            current_match = keyMatchesFilter(filter, key);
+                            current_match = maybeTrueOnSurfFilter(&*key_column, filter, match_all);
                         }
-
-                        LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Match result for key='{}': {}", key, current_match);
                     }
                     else
                     {
                         current_match = maybeTrueOnSurfFilter(&*key_column, filter, match_all);
                     }
-                }
-                else
-                {
-                    current_match = maybeTrueOnSurfFilter(&*key_column, filter, match_all);
-                }
 
-                // Update match_rows based on operation type
-                if (match_all)
-                {
-                    // AND operation: all must match
-                    match_rows = match_rows && current_match;
-                    if (!match_rows)
-                        break; // Early exit for AND operations
+                    // Update match_rows based on operation type
+                    if (match_all)
+                    {
+                        // AND operation: all must match
+                        match_rows = match_rows && current_match;
+                        if (!match_rows)
+                            break; // Early exit for AND operations
+                    }
+                    else
+                    {
+                        // OR operation: any can match
+                        match_rows = match_rows || current_match;
+                        if (match_rows && is_in_operation)
+                            break; // Early exit for IN operations when we find a match
+                    }
                 }
-                else
-                {
-                    // OR operation: any can match
-                    match_rows = match_rows || current_match;
-                    if (match_rows && is_in_operation)
-                        break; // Early exit for IN operations when we find a match
-                }
-            }
             }
 
             rpn_stack.emplace_back(match_rows, true);
@@ -1255,7 +1215,6 @@ void MergeTreeIndexAggregatorSurfFilter::update(const Block & block, size_t * po
             for (const auto & key : keys)
             {
                 accumulated_keys[column].push_back(key);
-                LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Accumulated key for column {}: '{}'", column, key);
             }
         }
         catch (...)
@@ -1270,7 +1229,6 @@ void MergeTreeIndexAggregatorSurfFilter::update(const Block & block, size_t * po
             {
                 std::string key = std::to_string(hash);
                 accumulated_keys[column].push_back(key);
-                LOG_TRACE(&Poco::Logger::get("SurfFilter"), "Accumulated hash key for column {}: '{}'", column, key);
             }
         }
     }
