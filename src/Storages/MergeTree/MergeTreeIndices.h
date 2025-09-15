@@ -401,6 +401,9 @@ void surfFilterIndexTextValidator(const IndexDescription & index, bool attach);
 MergeTreeIndexPtr surfFilterIndexCreator(const IndexDescription & index);
 void surfFilterIndexValidator(const IndexDescription & index, bool attach);
 
+MergeTreeIndexPtr grafiteFilterIndexCreator(const IndexDescription & index);
+void grafiteFilterIndexValidator(const IndexDescription & index, bool attach);
+
 MergeTreeIndexPtr hypothesisIndexCreator(const IndexDescription & index);
 void hypothesisIndexValidator(const IndexDescription & index, bool attach);
 

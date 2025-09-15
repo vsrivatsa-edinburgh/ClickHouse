@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-SuRF vs Bloom Filter Performance Evaluation Script - Numeric Point Queries
-
-This script compares the performance of SuRF vs Bloom filters for numeric point queries.
-Uses simple 0-1M numeric data with ID-based equality queries.
-"""
-
 import subprocess
 import random
 import time
@@ -122,7 +115,7 @@ class ClickHouseIndexEvaluator:
             else:
                 print(f"✗ Error dropping table {table_name}")
 
-    def create_surf_table(self, table_name: str, granularity: int) -> bool:
+    def create_grafite_table(self, table_name: str, granularity: int) -> bool:
         """Create table without index for numeric data"""
         create_sql = f"""
         CREATE TABLE {table_name} (
@@ -140,7 +133,7 @@ class ClickHouseIndexEvaluator:
             print(create_sql)
             return False
 
-    def create_bloom_table(self, table_name: str, granularity: int) -> bool:
+    def create_minmax_table(self, table_name: str, granularity: int) -> bool:
         """Create table without index for numeric data"""
         create_sql = f"""
         CREATE TABLE {table_name} (
@@ -159,27 +152,27 @@ class ClickHouseIndexEvaluator:
             print(create_sql)
             return False
     
-    def create_surf_index(self, table_name: str, approx_fp_rate: float, table_nonce: str = None) -> float:
-        """Create SuRF index on existing table and measure creation time
+    def create_grafite_index(self, table_name: str, approx_fp_rate: float, table_nonce: str = None) -> float:
+        """Create Grafite index on existing table and measure creation time
         Returns: index creation time in seconds"""
-        print(f"🔄 Creating SuRF index on {table_name}...")
+        print(f"🔄 Creating Grafite index on {table_name}...")
         
         # Step 1: Add the index definition
         create_index_sql = f"""
-        ALTER TABLE {table_name} ADD INDEX idx_id id TYPE surf_filter({approx_fp_rate}) GRANULARITY 1
+        ALTER TABLE {table_name} ADD INDEX idx_id id TYPE grafite_filter({approx_fp_rate}) GRANULARITY 1
         """
         
-        print("📝 Adding SuRF index definition...")
+        print("📝 Adding Grafite index definition...")
         result, success = self.execute_query(create_index_sql)
         
         if not success:
-            print(f"✗ Error adding SuRF index definition: {result}")
+            print(f"✗ Error adding Grafite index definition: {result}")
             return 0.0
         
-        print("✓ SuRF index definition added")
+        print("✓ Grafite index definition added")
         
         # Step 2: Materialize the index and measure the time
-        print("⏱️ Starting SuRF index materialization timing...")
+        print("⏱️ Starting Grafite index materialization timing...")
         
         # Record start time for measuring materialization
         start_time = time.time()
@@ -195,7 +188,7 @@ class ClickHouseIndexEvaluator:
         end_time = time.time()
         
         if not success:
-            print(f"✗ Error materializing SuRF index: {result}")
+            print(f"✗ Error materializing Grafite index: {result}")
             return 0.0
         
         # Calculate materialization time
@@ -208,30 +201,30 @@ class ClickHouseIndexEvaluator:
         # Use query_log time if available, otherwise use our measured time
         creation_time = query_log_time if query_log_time > 0 else materialization_time
         
-        print(f"✓ SuRF index materialized in {creation_time:.3f} seconds")
+        print(f"✓ Grafite index materialized in {creation_time:.3f} seconds")
         return creation_time
     
-    def create_bloom_index(self, table_name: str, approx_fp_rate: float, table_nonce: str = None) -> float:
-        """Create Bloom index on existing table and measure creation time
+    def create_minmax_index(self, table_name: str, approx_fp_rate: float, table_nonce: str = None) -> float:
+        """Create MinMax index on existing table and measure creation time
         Returns: index creation time in seconds"""
-        print(f"🔄 Creating Bloom index on {table_name}...")
+        print(f"🔄 Creating MinMax index on {table_name}...")
         
         # Step 1: Add the index definition
         create_index_sql = f"""
-        ALTER TABLE {table_name} ADD INDEX idx_id id TYPE bloom_filter({approx_fp_rate}) GRANULARITY 1
+        ALTER TABLE {table_name} ADD INDEX idx_id id TYPE minmax GRANULARITY 1
         """
         
-        print("📝 Adding Bloom index definition...")
+        print("📝 Adding MinMax index definition...")
         result, success = self.execute_query(create_index_sql)
         
         if not success:
-            print(f"✗ Error adding Bloom index definition: {result}")
+            print(f"✗ Error adding MinMax index definition: {result}")
             return 0.0
         
-        print("✓ Bloom index definition added")
+        print("✓ MinMax index definition added")
         
         # Step 2: Materialize the index and measure the time
-        print("⏱️ Starting Bloom index materialization timing...")
+        print("⏱️ Starting MinMax index materialization timing...")
         
         # Record start time for measuring materialization
         start_time = time.time()
@@ -247,7 +240,7 @@ class ClickHouseIndexEvaluator:
         end_time = time.time()
         
         if not success:
-            print(f"✗ Error materializing Bloom index: {result}")
+            print(f"✗ Error materializing MinMax index: {result}")
             return 0.0
         
         # Calculate materialization time
@@ -260,7 +253,7 @@ class ClickHouseIndexEvaluator:
         # Use query_log time if available, otherwise use our measured time
         creation_time = query_log_time if query_log_time > 0 else materialization_time
         
-        print(f"✓ Bloom index materialized in {creation_time:.3f} seconds")
+        print(f"✓ MinMax index materialized in {creation_time:.3f} seconds")
         return creation_time
     
     def insert_test_data(self, table_name: str, num_rows: int = 1000000):
@@ -330,43 +323,112 @@ class ClickHouseIndexEvaluator:
         print("💥 Crashing server after insertion to test persistence...")
         time.sleep(1)
     
-    def generate_test_queries(self, num_queries: int = 50, table_nonce: str = None) -> List[Tuple[str, int, bool]]:
-        """Generate random point queries for ID equality with metadata using stored numbers"""
+    def generate_grafite_queries(self, num_queries: int = 50, table_nonce: str = None) -> List[Tuple[str, Tuple[int, int], bool]]:
+        """Generate random range queries for Grafite using IN(a,b) syntax"""
         queries = []
+        range_sizes = [10]  # Possible range sizes
         
         if not self.inserted_numbers:
-            print("⚠️ Warning: No inserted numbers available, generating random queries")
+            print("⚠️ Warning: No inserted numbers available, generating random IN range queries")
             # Fallback to random generation if no numbers are stored
             for _ in range(num_queries):
-                target_id = random.randint(0, 1999999)
+                range_size = random.choice(range_sizes)
+                start_id = random.randint(0, 1999999 - range_size)
+                end_id = start_id + range_size
                 should_exist = False
                 nonce_comment = f" /* nonce:{table_nonce} */" if table_nonce else ""
-                query = f"SELECT COUNT(*) FROM {{table}} WHERE id = {target_id} SETTINGS force_data_skipping_indices='idx_id'{nonce_comment}"
-                queries.append((query, target_id, should_exist))
+                query = f"SELECT COUNT(*) FROM {{table}} WHERE id IN ({start_id}, {end_id}) SETTINGS force_data_skipping_indices='idx_id'{nonce_comment}"
+                queries.append((query, (start_id, end_id), should_exist))
             return queries
         
-        # Convert set to list for random sampling
-        inserted_list = list(self.inserted_numbers)
+        # Convert set to list for random sampling and sort for range operations
+        inserted_list = sorted(list(self.inserted_numbers))
         max_inserted = max(self.inserted_numbers)
+        min_inserted = min(self.inserted_numbers)
         
         for _ in range(num_queries):
-            if random.random() < 0.5:  # 50% true positives (existing numbers)
-                target_id = random.choice(inserted_list)
+            range_size = random.choice(range_sizes)
+            
+            if random.random() < 0.5:  # 50% true positives (ranges containing existing numbers)
+                # Create a range that definitely contains some inserted numbers
+                if len(inserted_list) >= 10:
+                    start_idx = random.randint(0, len(inserted_list) - 5)
+                    base_number = inserted_list[start_idx]
+                    start_id = base_number
+                    end_id = base_number + range_size
+                else:
+                    # Fallback for small datasets
+                    start_id = min_inserted
+                    end_id = min_inserted + range_size
                 should_exist = True
-            else:  # 50% false positives (non-existing numbers)
-                # Generate a number that's definitely not in the inserted set
-                target_id = max_inserted + random.randint(1, 1000000)
+            else:  # 50% false positives (ranges with no existing numbers)
+                # Generate a range that's definitely outside the inserted range
+                start_id = max_inserted + random.randint(1, 100000)
+                end_id = start_id + range_size
+                should_exist = False
+            
+            # Use table-specific nonce instead of global nonce
+            # IN (a,b) for Grafite acts as BETWEEN a AND b
+            nonce_comment = f" /* nonce:{table_nonce} */" if table_nonce else ""
+            query = f"SELECT COUNT(*) FROM {{table}} WHERE id IN ({start_id}, {end_id}) SETTINGS force_data_skipping_indices='idx_id'{nonce_comment}"
+            queries.append((query, (start_id, end_id), should_exist))
+            
+        print(f"📊 Generated {num_queries} IN range queries: {sum(1 for _, _, exists in queries if exists)} true positives, {sum(1 for _, _, exists in queries if not exists)} false positives")
+        return queries
+
+    def generate_minmax_queries(self, num_queries: int = 50, table_nonce: str = None) -> List[Tuple[str, Tuple[int, int], bool]]:
+        """Generate random range queries for MinMax using BETWEEN syntax"""
+        queries = []
+        range_sizes = [10, 100, 1000]  # Possible range sizes
+        
+        if not self.inserted_numbers:
+            print("⚠️ Warning: No inserted numbers available, generating random BETWEEN queries")
+            # Fallback to random generation if no numbers are stored
+            for _ in range(num_queries):
+                range_size = random.choice(range_sizes)
+                start_id = random.randint(0, 1999999 - range_size)
+                end_id = start_id + range_size
+                should_exist = False
+                nonce_comment = f" /* nonce:{table_nonce} */" if table_nonce else ""
+                query = f"SELECT COUNT(*) FROM {{table}} WHERE id BETWEEN {start_id} AND {end_id} SETTINGS force_data_skipping_indices='idx_id'{nonce_comment}"
+                queries.append((query, (start_id, end_id), should_exist))
+            return queries
+        
+        # Convert set to list for random sampling and sort for range operations
+        inserted_list = sorted(list(self.inserted_numbers))
+        max_inserted = max(self.inserted_numbers)
+        min_inserted = min(self.inserted_numbers)
+        
+        for _ in range(num_queries):
+            range_size = random.choice(range_sizes)
+            
+            if random.random() < 0.5:  # 50% true positives (ranges containing existing numbers)
+                # Create a range that definitely contains some inserted numbers
+                if len(inserted_list) >= 10:
+                    start_idx = random.randint(0, len(inserted_list) - 5)
+                    base_number = inserted_list[start_idx]
+                    start_id = base_number
+                    end_id = base_number + range_size
+                else:
+                    # Fallback for small datasets
+                    start_id = min_inserted
+                    end_id = min_inserted + range_size
+                should_exist = True
+            else:  # 50% false positives (ranges with no existing numbers)
+                # Generate a range that's definitely outside the inserted range
+                start_id = max_inserted + random.randint(1, 100000)
+                end_id = start_id + range_size
                 should_exist = False
             
             # Use table-specific nonce instead of global nonce
             nonce_comment = f" /* nonce:{table_nonce} */" if table_nonce else ""
-            query = f"SELECT COUNT(*) FROM {{table}} WHERE id = {target_id} SETTINGS force_data_skipping_indices='idx_id'{nonce_comment}"
-            queries.append((query, target_id, should_exist))
+            query = f"SELECT COUNT(*) FROM {{table}} WHERE id BETWEEN {start_id} AND {end_id} SETTINGS force_data_skipping_indices='idx_id'{nonce_comment}"
+            queries.append((query, (start_id, end_id), should_exist))
             
-        print(f"📊 Generated {num_queries} queries: {sum(1 for _, _, exists in queries if exists)} true positives, {sum(1 for _, _, exists in queries if not exists)} false positives")
+        print(f"📊 Generated {num_queries} BETWEEN queries: {sum(1 for _, _, exists in queries if exists)} true positives, {sum(1 for _, _, exists in queries if not exists)} false positives")
         return queries
     
-    def run_query_performance_test(self, table_name: str, queries: List[Tuple[str, int, bool]], iterations: int = 1, table_nonce: str = None) -> Dict:
+    def run_query_performance_test(self, table_name: str, queries: List[Tuple[str, Tuple[int, int], bool]], iterations: int = 1, table_nonce: str = None) -> Dict:
         """Run performance test on queries and collect metrics"""
         results = {
             'table_name': table_name,
@@ -388,8 +450,19 @@ class ClickHouseIndexEvaluator:
         batch_start_time = time.time()
         
         for iteration in range(iterations):
-            for i, (query_template, target_id, should_exist) in enumerate(queries):
+            for i, (query_template, query_range, should_exist) in enumerate(queries):
                 query = query_template.format(table=table_name)
+                start_id, end_id = query_range
+                
+                # Determine query type for logging
+                if "BETWEEN" in query_template:
+                    query_type = "BETWEEN"
+                elif "IN (" in query_template:
+                    query_type = "IN_RANGE"
+                else:
+                    query_type = "UNKNOWN"
+                
+                print(f"    {query_type} query [{start_id}, {end_id}], should_exist={should_exist}")
                 
                 # Run EXPLAIN to get index usage
                 explain_query = f"EXPLAIN indexes = 1 {query}"
@@ -414,13 +487,13 @@ class ClickHouseIndexEvaluator:
                         total_granules = id_usage.get('total_granules', 0)
                         scanned_granules = id_usage.get('scanned_granules', 0)  # Actually scanned granules
                         
-                        print(f"    Query ID={target_id}, should_exist={should_exist}")
+                        print(f"    Range [{start_id}, {end_id}], should_exist={should_exist}")
                         print(f"    Total granules: {total_granules}, Scanned: {scanned_granules}")
 
                         # Calculate excessive granules and false positive ratio
                         if should_exist:
-                            # For existing IDs, we expect exactly 1 granule to be examined
-                            expected_granules = 1
+                            # For ranges with expected results, we may need multiple granules
+                            expected_granules = max(1, min(3, scanned_granules))  # Allow 1-3 granules for range queries
                             excessive_granules = max(0, scanned_granules - expected_granules)
                         else:
                             # For non-existing IDs, we expect 0 granules to be examined
@@ -444,7 +517,10 @@ class ClickHouseIndexEvaluator:
                     
                     # Store detailed query information (no binary false positive tracking)
                     results['query_details'].append({
-                        'target_id': target_id,
+                        'query_type': query_type,
+                        'query_range': query_range,
+                        'range_start': start_id,
+                        'range_end': end_id,
                         'should_exist': should_exist,
                         'granules_examined': scanned_granules,
                         'excessive_granules': excessive_granules,
@@ -456,7 +532,10 @@ class ClickHouseIndexEvaluator:
                     print(f"✗ Query failed: {result_output}")
                     results['granules_examined'].append(0)
                     results['query_details'].append({
-                        'target_id': target_id,
+                        'query_type': query_type,
+                        'query_range': query_range,
+                        'range_start': start_id,
+                        'range_end': end_id,
                         'should_exist': should_exist,
                         'granules_examined': 0,
                         'excessive_granules': 0,
@@ -518,7 +597,7 @@ class ClickHouseIndexEvaluator:
         # Look for the new format:
         # Skip
         #   Name: idx_id
-        #   Description: surf_filter GRANULARITY 1
+        #   Description: grafite_filter GRANULARITY 1
         #   Parts: 0/1
         #   Granules: 0/122
         
@@ -716,17 +795,16 @@ class ClickHouseIndexEvaluator:
         
         # Simplified configuration parameters for numeric testing
         configs = [
-            (1, 0.025),
-            (0, 0.025),
-            (2, 0.025),
-            (3, 0.025)
+            (8.0, 0.05),
+            (10.0, 0.05),
+            (11.0, 0.05)
         ]
         
         results = []
         
         for variant, approx_fp_rate in configs:
             config_name = f"appx_fp_{approx_fp_rate}"
-            granularity = 1000
+            granularity = 10000
             
             print(f"\n{'='*60}")
             print(f"🚀 Testing Configuration: {config_name}")
@@ -738,63 +816,65 @@ class ClickHouseIndexEvaluator:
             safe_config_name = config_name.replace('.', '')
             
             # Generate separate nonces for each table to prevent metric pollution
-            surf_nonce = str(uuid.uuid4()).replace('-', '')[:8]
-            bloom_nonce = str(uuid.uuid4()).replace('-', '')[:8]
+            grafite_nonce = str(uuid.uuid4()).replace('-', '')[:8]
+            minmax_nonce = str(uuid.uuid4()).replace('-', '')[:8]
             
-            surf_table = f"test_surf_{safe_config_name}_{surf_nonce}"
-            bloom_table = f"test_bloom_{safe_config_name}_{bloom_nonce}"
+            grafite_table = f"test_grafite_{safe_config_name}_{grafite_nonce}"
+            minmax_table = f"test_minmax_{safe_config_name}_{minmax_nonce}"
             
-            print(f"📋 SuRF table: {surf_table}")
-            print(f"📋 Bloom table: {bloom_table}")
+            print(f"📋 Grafite table: {grafite_table}")
+            print(f"📋 MinMax table: {minmax_table}")
             
             # Step 1: Delete existing tables
-            self.delete_tables_if_exist([surf_table, bloom_table])
+            self.delete_tables_if_exist([grafite_table, minmax_table])
             
             # Step 2: Create tables (without indexes)
-            surf_success = self.create_surf_table(surf_table, granularity)
-            bloom_success = self.create_bloom_table(bloom_table, granularity)
+            grafite_success = self.create_grafite_table(grafite_table, granularity)
+            minmax_success = self.create_minmax_table(minmax_table, granularity)
 
-            if not (surf_success and bloom_success):
+            if not (grafite_success and minmax_success):
                 print(f"✗ Failed to create tables for config {config_name}")
                 continue
             
             # Step 3: Insert test data (1 million rows) - same data for both tables
-            self.insert_test_data(surf_table, 1000000)
-            self.insert_test_data(bloom_table, 1000000)
+            self.insert_test_data(grafite_table, 1000000)
+            self.insert_test_data(minmax_table, 1000000)
             
             # Step 4: Create indexes and measure creation time
-            surf_construction_time = self.create_surf_index(surf_table, variant, surf_nonce)
-            bloom_construction_time = self.create_bloom_index(bloom_table, approx_fp_rate, bloom_nonce)
+            grafite_construction_time = self.create_grafite_index(grafite_table, variant, grafite_nonce)
+            minmax_construction_time = self.create_minmax_index(minmax_table, approx_fp_rate, minmax_nonce)
             
             # Restart ClickHouse server after data insertion to test persistence
             print("🔄 Restarting ClickHouse server after data insertion...")
             self.restart_clickhouse_server()
             
-            # Generate separate test queries for each table with table-specific nonces
-            surf_test_queries = self.generate_test_queries(50, surf_nonce)
-            bloom_test_queries = self.generate_test_queries(50, bloom_nonce)
+            # Generate appropriate test queries for each index type
+            # Grafite gets IN queries (acts as range queries)
+            grafite_test_queries = self.generate_grafite_queries(50, grafite_nonce)
+            # MinMax gets BETWEEN queries (standard range queries)  
+            minmax_test_queries = self.generate_minmax_queries(50, minmax_nonce)
             
-            surf_results = self.run_query_performance_test(surf_table, surf_test_queries, 1, surf_nonce)
-            bloom_results = self.run_query_performance_test(bloom_table, bloom_test_queries, 1, bloom_nonce)
+            grafite_results = self.run_query_performance_test(grafite_table, grafite_test_queries, 1, grafite_nonce)
+            minmax_results = self.run_query_performance_test(minmax_table, minmax_test_queries, 1, minmax_nonce)
             
             # Get index sizes
-            surf_sizes = self.get_index_sizes(surf_table)
-            bloom_sizes = self.get_index_sizes(bloom_table)
+            grafite_sizes = self.get_index_sizes(grafite_table)
+            minmax_sizes = self.get_index_sizes(minmax_table)
             
             # Compile results
             config_results = {
                 'config': config_name,
                 'approx_fp_rate': approx_fp_rate,
                 'granularity': granularity,
-                'surf': {
-                    'performance': surf_results,
-                    'sizes': surf_sizes,
-                    'construction_time_seconds': surf_construction_time
+                'grafite': {
+                    'performance': grafite_results,
+                    'sizes': grafite_sizes,
+                    'construction_time_seconds': grafite_construction_time
                 },
-                'bloom': {
-                    'performance': bloom_results,
-                    'sizes': bloom_sizes,
-                    'construction_time_seconds': bloom_construction_time
+                'minmax': {
+                    'performance': minmax_results,
+                    'sizes': minmax_sizes,
+                    'construction_time_seconds': minmax_construction_time
                 }
             }
             
@@ -804,7 +884,7 @@ class ClickHouseIndexEvaluator:
             self.print_config_results(config_results)
             
             # Cleanup tables to save space - DISABLED to keep tables for analysis
-            # self.delete_tables_if_exist([surf_table, bloom_table])
+            # self.delete_tables_if_exist([grafite_table, minmax_table])
         
         # Print final comparison
         self.print_final_results(results)
@@ -814,49 +894,49 @@ class ClickHouseIndexEvaluator:
     def print_config_results(self, config_results: Dict):
         """Print results for a single configuration"""
         config = config_results['config']
-        surf = config_results['surf']
-        bloom = config_results['bloom']
+        grafite = config_results['grafite']
+        minmax = config_results['minmax']
         
         print(f"\n📊 Results for {config}:")
         print(f"{'─'*50}")
         
         # Performance comparison
         print("🚀 Performance Metrics:")
-        surf_latency_ms = surf['performance']['avg_execution_time'] * 1000
-        bloom_latency_ms = bloom['performance']['avg_execution_time'] * 1000
+        grafite_latency_ms = grafite['performance']['avg_execution_time'] * 1000
+        minmax_latency_ms = minmax['performance']['avg_execution_time'] * 1000
         
-        print(f"  SuRF   - Latency: {surf_latency_ms:.2f}ms, "
-              f"Throughput: {surf['performance']['throughput_qps']:.1f} QPS, "
-              f"Avg Granules: {surf['performance']['avg_granules_examined']:.1f}")
-        print(f"  Bloom  - Latency: {bloom_latency_ms:.2f}ms, "
-              f"Throughput: {bloom['performance']['throughput_qps']:.1f} QPS, "
-              f"Avg Granules: {bloom['performance']['avg_granules_examined']:.1f}")
+        print(f"  Grafite   - Latency: {grafite_latency_ms:.2f}ms, "
+              f"Throughput: {grafite['performance']['throughput_qps']:.1f} QPS, "
+              f"Avg Granules: {grafite['performance']['avg_granules_examined']:.1f}")
+        print(f"  MinMax  - Latency: {minmax_latency_ms:.2f}ms, "
+              f"Throughput: {minmax['performance']['throughput_qps']:.1f} QPS, "
+              f"Avg Granules: {minmax['performance']['avg_granules_examined']:.1f}")
         
         # Granule efficiency comparison
         print("\n🎯 Granule Efficiency:")
-        surf_total_granules = surf['performance'].get('total_granules_examined', 0)
-        bloom_total_granules = bloom['performance'].get('total_granules_examined', 0)
-        surf_excessive = surf['performance'].get('total_excessive_granules', 0)
-        bloom_excessive = bloom['performance'].get('total_excessive_granules', 0)
+        grafite_total_granules = grafite['performance'].get('total_granules_examined', 0)
+        minmax_total_granules = minmax['performance'].get('total_granules_examined', 0)
+        grafite_excessive = grafite['performance'].get('total_excessive_granules', 0)
+        minmax_excessive = minmax['performance'].get('total_excessive_granules', 0)
         
-        print(f"  SuRF   - FP Rate: {surf['performance']['false_positive_rate']:.4f} ({surf_excessive}/{surf_total_granules} excessive/total)")
-        print(f"  Bloom  - FP Rate: {bloom['performance']['false_positive_rate']:.4f} ({bloom_excessive}/{bloom_total_granules} excessive/total)")
+        print(f"  Grafite   - FP Rate: {grafite['performance']['false_positive_rate']:.4f} ({grafite_excessive}/{grafite_total_granules} excessive/total)")
+        print(f"  MinMax  - FP Rate: {minmax['performance']['false_positive_rate']:.4f} ({minmax_excessive}/{minmax_total_granules} excessive/total)")
         
         # Filtering marks comparison  
         print("\n⚡ Index Filtering Performance:")
-        surf_filtering_avg = surf['performance'].get('avg_filtering_marks_per_query', 0)
-        bloom_filtering_avg = bloom['performance'].get('avg_filtering_marks_per_query', 0)
-        print(f"  SuRF   - Avg filtering time: {surf_filtering_avg:.1f}μs per query")
-        print(f"  Bloom  - Avg filtering time: {bloom_filtering_avg:.1f}μs per query")
+        grafite_filtering_avg = grafite['performance'].get('avg_filtering_marks_per_query', 0)
+        minmax_filtering_avg = minmax['performance'].get('avg_filtering_marks_per_query', 0)
+        print(f"  Grafite   - Avg filtering time: {grafite_filtering_avg:.1f}μs per query")
+        print(f"  MinMax  - Avg filtering time: {minmax_filtering_avg:.1f}μs per query")
         
         # Size comparison
         print("\n💾 Index Sizes:")
-        if 'total' in surf['sizes']:
-            print(f"  SuRF   - Compressed: {self.format_bytes(surf['sizes']['total']['compressed_bytes'])}, "
-                  f"Uncompressed: {self.format_bytes(surf['sizes']['total']['uncompressed_bytes'])}")
-        if 'total' in bloom['sizes']:
-            print(f"  Bloom  - Compressed: {self.format_bytes(bloom['sizes']['total']['compressed_bytes'])}, "
-                  f"Uncompressed: {self.format_bytes(bloom['sizes']['total']['uncompressed_bytes'])}")
+        if 'total' in grafite['sizes']:
+            print(f"  Grafite   - Compressed: {self.format_bytes(grafite['sizes']['total']['compressed_bytes'])}, "
+                  f"Uncompressed: {self.format_bytes(grafite['sizes']['total']['uncompressed_bytes'])}")
+        if 'total' in minmax['sizes']:
+            print(f"  MinMax  - Compressed: {self.format_bytes(minmax['sizes']['total']['compressed_bytes'])}, "
+                  f"Uncompressed: {self.format_bytes(minmax['sizes']['total']['uncompressed_bytes'])}")
     
     def print_final_results(self, all_results: List[Dict]):
         """Print comprehensive final results"""
@@ -865,115 +945,118 @@ class ClickHouseIndexEvaluator:
         print(f"{'='*80}")
         
         # Create summary table header (comprehensive performance metrics + index sizes + filtering marks)
-        print(f"{'Config':<20} {'SuRF Lat(ms)':<11} {'Bloom Lat(ms)':<12} {'SuRF QPS':<9} {'Bloom QPS':<10} {'SuRF FP Rate':<11} {'Bloom FP Rate':<12} {'SuRF Gran':<9} {'Bloom Gran':<10} {'SuRF Filt(μs)':<12} {'Bloom Filt(μs)':<14} {'SuRF Comp(KB)':<12} {'SuRF Uncomp(KB)':<14} {'Bloom Comp(KB)':<14} {'Bloom Uncomp(KB)':<16}")
+        print(f"{'Config':<20} {'Grafite Lat(ms)':<11} {'MinMax Lat(ms)':<12} {'Grafite QPS':<9} {'MinMax QPS':<10} {'Grafite FP Rate':<11} {'MinMax FP Rate':<12} {'Grafite Gran':<9} {'MinMax Gran':<10} {'Grafite Filt(μs)':<12} {'MinMax Filt(μs)':<14} {'Grafite Comp(KB)':<12} {'Grafite Uncomp(KB)':<14} {'MinMax Comp(KB)':<14} {'MinMax Uncomp(KB)':<16}")
         print("─" * 230)
         
         # Create summary data
         for result in all_results:
             config = result['config']
-            surf_perf = result['surf']['performance']
-            bloom_perf = result['bloom']['performance']
-            surf_sizes = result['surf']['sizes']
-            bloom_sizes = result['bloom']['sizes']
+            grafite_perf = result['grafite']['performance']
+            minmax_perf = result['minmax']['performance']
+            grafite_sizes = result['grafite']['sizes']
+            minmax_sizes = result['minmax']['sizes']
             
             # Convert latency from seconds to milliseconds
-            surf_latency_ms = surf_perf['avg_execution_time'] * 1000
-            bloom_latency_ms = bloom_perf['avg_execution_time'] * 1000
+            grafite_latency_ms = grafite_perf['avg_execution_time'] * 1000
+            minmax_latency_ms = minmax_perf['avg_execution_time'] * 1000
             
             # Get index sizes in KB (both compressed and uncompressed)
-            surf_comp_kb = surf_sizes.get('total', {}).get('compressed_bytes', 0) / 1024
-            surf_uncomp_kb = surf_sizes.get('total', {}).get('uncompressed_bytes', 0) / 1024
-            bloom_comp_kb = bloom_sizes.get('total', {}).get('compressed_bytes', 0) / 1024
-            bloom_uncomp_kb = bloom_sizes.get('total', {}).get('uncompressed_bytes', 0) / 1024
+            grafite_comp_kb = grafite_sizes.get('total', {}).get('compressed_bytes', 0) / 1024
+            grafite_uncomp_kb = grafite_sizes.get('total', {}).get('uncompressed_bytes', 0) / 1024
+            minmax_comp_kb = minmax_sizes.get('total', {}).get('compressed_bytes', 0) / 1024
+            minmax_uncomp_kb = minmax_sizes.get('total', {}).get('uncompressed_bytes', 0) / 1024
             
             # Get filtering marks average per query
-            surf_filtering_avg = surf_perf.get('avg_filtering_marks_per_query', 0)
-            bloom_filtering_avg = bloom_perf.get('avg_filtering_marks_per_query', 0)
+            grafite_filtering_avg = grafite_perf.get('avg_filtering_marks_per_query', 0)
+            minmax_filtering_avg = minmax_perf.get('avg_filtering_marks_per_query', 0)
             
             print(f"{config:<20} "
-                  f"{surf_latency_ms:<11.2f} "
-                  f"{bloom_latency_ms:<12.2f} "
-                  f"{surf_perf['throughput_qps']:<9.1f} "
-                  f"{bloom_perf['throughput_qps']:<10.1f} "
-                  f"{surf_perf['false_positive_rate']:<11.4f} "
-                  f"{bloom_perf['false_positive_rate']:<12.4f} "
-                  f"{surf_perf['avg_granules_examined']:<9.1f} "
-                  f"{bloom_perf['avg_granules_examined']:<10.1f} "
-                  f"{surf_filtering_avg:<12.1f} "
-                  f"{bloom_filtering_avg:<14.1f} "
-                  f"{surf_comp_kb:<12.1f} "
-                  f"{surf_uncomp_kb:<14.1f} "
-                  f"{bloom_comp_kb:<14.1f} "
-                  f"{bloom_uncomp_kb:<16.1f}")
+                  f"{grafite_latency_ms:<11.2f} "
+                  f"{minmax_latency_ms:<12.2f} "
+                  f"{grafite_perf['throughput_qps']:<9.1f} "
+                  f"{minmax_perf['throughput_qps']:<10.1f} "
+                  f"{grafite_perf['false_positive_rate']:<11.4f} "
+                  f"{minmax_perf['false_positive_rate']:<12.4f} "
+                  f"{grafite_perf['avg_granules_examined']:<9.1f} "
+                  f"{minmax_perf['avg_granules_examined']:<10.1f} "
+                  f"{grafite_filtering_avg:<12.1f} "
+                  f"{minmax_filtering_avg:<14.1f} "
+                  f"{grafite_comp_kb:<12.1f} "
+                  f"{grafite_uncomp_kb:<14.1f} "
+                  f"{minmax_comp_kb:<14.1f} "
+                  f"{minmax_uncomp_kb:<16.1f}")
         
         # Print detailed false positive analysis
         print(f"\n📈 False Positive Ratio Analysis:")
-        print(f"{'Config':<20} {'SuRF Avg FP Ratio':<16} {'Bloom Avg FP Ratio':<18} {'SuRF Max FP Ratio':<16} {'Bloom Max FP Ratio':<18}")
+        print(f"{'Config':<20} {'Grafite Avg FP Ratio':<16} {'MinMax Avg FP Ratio':<18} {'Grafite Max FP Ratio':<16} {'MinMax Max FP Ratio':<18}")
         print("─" * 90)
         
         for result in all_results:
             config = result['config']
-            surf_perf = result['surf']['performance']
-            bloom_perf = result['bloom']['performance']
+            grafite_perf = result['grafite']['performance']
+            minmax_perf = result['minmax']['performance']
             
             print(f"{config:<20} "
-                  f"{surf_perf['avg_false_positive_ratio']:<16.3f} "
-                  f"{bloom_perf['avg_false_positive_ratio']:<18.3f} "
-                  f"{surf_perf['max_false_positive_ratio']:<16.3f} "
-                  f"{bloom_perf['max_false_positive_ratio']:<18.3f}")
+                  f"{grafite_perf['avg_false_positive_ratio']:<16.3f} "
+                  f"{minmax_perf['avg_false_positive_ratio']:<18.3f} "
+                  f"{grafite_perf['max_false_positive_ratio']:<16.3f} "
+                  f"{minmax_perf['max_false_positive_ratio']:<18.3f}")
         
         # Print excessive granule analysis
         print(f"\n🔍 Excessive Granule Analysis:")
-        print(f"{'Config':<20} {'SuRF Total Excessive':<19} {'Bloom Total Excessive':<21} {'SuRF Avg Excessive':<17} {'Bloom Avg Excessive':<19}")
+        print(f"{'Config':<20} {'Grafite Total Excessive':<19} {'MinMax Total Excessive':<21} {'Grafite Avg Excessive':<17} {'MinMax Avg Excessive':<19}")
         print("─" * 100)
         
         for result in all_results:
             config = result['config']
-            surf_perf = result['surf']['performance']
-            bloom_perf = result['bloom']['performance']
+            grafite_perf = result['grafite']['performance']
+            minmax_perf = result['minmax']['performance']
             
             print(f"{config:<20} "
-                  f"{surf_perf['total_excessive_granules']:<19} "
-                  f"{bloom_perf['total_excessive_granules']:<21} "
-                  f"{surf_perf['avg_excessive_granules']:<17.2f} "
-                  f"{bloom_perf['avg_excessive_granules']:<19.2f}")
+                  f"{grafite_perf['total_excessive_granules']:<19} "
+                  f"{minmax_perf['total_excessive_granules']:<21} "
+                  f"{grafite_perf['avg_excessive_granules']:<17.2f} "
+                  f"{minmax_perf['avg_excessive_granules']:<19.2f}")
         
         # Print index construction time analysis
         print(f"\n⏱️ Index Construction Time Analysis:")
-        print(f"{'Config':<20} {'SuRF Construction (s)':<20} {'Bloom Construction (s)':<22} {'Speedup (Bloom/SuRF)':<20}")
+        print(f"{'Config':<20} {'Grafite Construction (s)':<20} {'MinMax Construction (s)':<22} {'Speedup (MinMax/Grafite)':<20}")
         print("─" * 85)
         
         for result in all_results:
             config = result['config']
-            surf_time = result['surf'].get('construction_time_seconds', 0)
-            bloom_time = result['bloom'].get('construction_time_seconds', 0)
-            speedup = bloom_time / surf_time if surf_time > 0 else 0
+            grafite_time = result['grafite'].get('construction_time_seconds', 0)
+            minmax_time = result['minmax'].get('construction_time_seconds', 0)
+            speedup = minmax_time / grafite_time if grafite_time > 0 else 0
             
             print(f"{config:<20} "
-                  f"{surf_time:<20.3f} "
-                  f"{bloom_time:<22.3f} "
+                  f"{grafite_time:<20.3f} "
+                  f"{minmax_time:<22.3f} "
                   f"{speedup:<20.2f}x")
 
         # Save detailed JSON
         session_id = str(uuid.uuid4()).replace('-', '')[:8]
-        json_filename = f"surf_vs_bloom_detailed_{session_id}_{int(time.time())}.json"
+        json_filename = f"grafite_vs_minmax_detailed_{session_id}_{int(time.time())}.json"
         with open(json_filename, 'w') as f:
             json.dump(all_results, f, indent=2, default=str)
         print(f"\n📄 Detailed results saved to {json_filename}")
         print(f"🎯 Session ID: {session_id}")
 
 def main():
-    parser = argparse.ArgumentParser(description='SuRF vs Bloom Filter Performance Evaluation - Numeric Point Queries')
+    parser = argparse.ArgumentParser(description='Grafite vs MinMax Filter Performance Evaluation - Numeric Range Queries')
     parser.add_argument('--client-path', default='./build/programs/clickhouse', 
                        help='Path to ClickHouse client binary')
     
     args = parser.parse_args()
     
-    print("🎯 Starting SuRF vs Bloom Filter Evaluation (Numeric Point Queries)")
+    print("🎯 Starting Grafite vs MinMax Filter Evaluation (Numeric Range Queries)")
     print(f"   Using ClickHouse client: {args.client_path}")
     print("   Test data: 1M rows (0 to 999,999)")
-    print("   Query type: Point queries on ID field")
-    print("   Index granularity: 100 (fixed)")
+    print("   Query type: Range queries on ID field")
+    print("   Grafite: IN(a,b) queries (acts as BETWEEN)")
+    print("   MinMax: BETWEEN a AND b queries")
+    print("   Index granularity: 10000 (fixed)")
+    print("   Range sizes: [10]")
     
     try:
         evaluator = ClickHouseIndexEvaluator(args.client_path)

@@ -1,4 +1,4 @@
-#include <Storages/MergeTree/MergeTreeIndexSurfFilter.h>
+#include <Storages/MergeTree/MergeTreeIndexGrafiteFilter.h>
 
 #include <iostream>
 #include <Columns/ColumnConst.h>
@@ -8,9 +8,10 @@
 #include <DataTypes/DataTypeTuple.h>
 #include <IO/WriteHelpers.h>
 #include <Interpreters/ExpressionAnalyzer.h>
+#include <Interpreters/GrafiteFilter.h>
+#include <Interpreters/GrafiteFilterHash.h>
 #include <Interpreters/PreparedSets.h>
 #include <Interpreters/Set.h>
-#include <Interpreters/SurfFilterHash.h>
 #include <Interpreters/castColumn.h>
 #include <Interpreters/convertFieldToType.h>
 #include <Interpreters/misc.h>
@@ -40,128 +41,104 @@ extern const int LOGICAL_ERROR;
 }
 
 // Forward declarations for key extraction functions
-std::string extractKeyFromFieldSurf(const Field & field, const DataTypePtr & data_type);
-std::vector<std::string> extractKeysFromColumnSurf(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit);
+std::string extractKeyFromFieldGrafite(const Field & field, const DataTypePtr & data_type);
+std::vector<std::string> extractKeysFromColumnGrafite(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit);
 
-// Convert false positive probability to SuRF parameters
-static SurfFilterParameters getSurfParameters(int variant)
+// Convert false positive probability to Grafite parameters
+static GrafiteFilterParameters getGrafiteParameters(double bits_per_key = 2.0)
 {
-    // For SuRF, we can configure parameters based on false positive probability
-    // Lower false positive probability = more aggressive suffix storage
-
-    if (variant == 0) // Low FP rate
-    {
-        // Use hash suffixes with more suffix bits for maximum accuracy
-        return SurfFilterParameters(true, 16, kHash, 4, 0);
-    }
-    else if (variant == 1) // Very low FP rate
-    {
-        // Use shorter hash suffixes
-        return SurfFilterParameters(true, 16, kHash, 8, 0);
-    }
-    else if (variant == 2) // High FP rate (0.025)
-    {
-        // Use real suffixes for better performance
-        return SurfFilterParameters(true, 16, kReal, 0, 8);
-    }
-    else // Very high FP rate (> 0.05)
-    {
-        // No suffixes for maximum speed
-        return SurfFilterParameters(true, 16, kNone, 0, 0);
-    }
+    return GrafiteFilterParameters(bits_per_key);
 }
 
-MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(size_t index_columns_, int variant)
-    : surf_filters(index_columns_)
+MergeTreeIndexGranuleGrafiteFilter::MergeTreeIndexGranuleGrafiteFilter(size_t index_columns_, double bits_per_key_)
+    : bits_per_key(bits_per_key_)
+    , grafite_filters(index_columns_)
 {
     total_rows = 0;
-    // Create SurfFilter with user-provided parameters
-    SurfFilterParameters params = getSurfParameters(variant);
+    // Create GrafiteFilter with user-provided parameters
+    GrafiteFilterParameters params = getGrafiteParameters(bits_per_key);
 
     for (size_t column = 0; column < index_columns_; ++column)
-        surf_filters[column] = std::make_shared<SurfFilter>(params);
+        grafite_filters[column] = std::make_shared<GrafiteFilter>(params);
 }
 
-MergeTreeIndexGranuleSurfFilter::MergeTreeIndexGranuleSurfFilter(const std::vector<std::set<std::string>> & column_keys_, int variant)
-    : surf_filters(column_keys_.size())
+MergeTreeIndexGranuleGrafiteFilter::MergeTreeIndexGranuleGrafiteFilter(
+    const std::vector<std::set<std::string>> & column_keys_, double bits_per_key_)
+    : bits_per_key(bits_per_key_)
+    , grafite_filters(column_keys_.size())
 {
     if (column_keys_.empty())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Column keys empty or total_rows is zero.");
 
-    size_t surf_filter_max_size = 0;
+    size_t grafite_filter_max_size = 0;
     for (const auto & column_key_set : column_keys_)
-        surf_filter_max_size = std::max(surf_filter_max_size, column_key_set.size());
+        grafite_filter_max_size = std::max(grafite_filter_max_size, column_key_set.size());
 
-    total_rows = surf_filter_max_size;
+    total_rows = grafite_filter_max_size;
 
-    // Create SurfFilter with user-provided parameters
-    SurfFilterParameters params = getSurfParameters(variant);
+    // Create GrafiteFilter with user-provided parameters
+    GrafiteFilterParameters params = getGrafiteParameters(bits_per_key);
 
     for (size_t column = 0, columns = column_keys_.size(); column < columns; ++column)
     {
-        surf_filters[column] = std::make_shared<SurfFilter>(params);
-        fillingSurfFilterWithKeys(surf_filters[column], column_keys_[column], variant);
+        grafite_filters[column] = std::make_shared<GrafiteFilter>(params);
+        fillingGrafiteFilterWithKeys(grafite_filters[column], column_keys_[column], bits_per_key);
     }
 }
 
-bool MergeTreeIndexGranuleSurfFilter::empty() const
+bool MergeTreeIndexGranuleGrafiteFilter::empty() const
 {
     return !total_rows;
 }
 
-size_t MergeTreeIndexGranuleSurfFilter::memoryUsageBytes() const
+size_t MergeTreeIndexGranuleGrafiteFilter::memoryUsageBytes() const
 {
     size_t sum = 0;
-    for (const auto & surf_filter : surf_filters)
-        sum += surf_filter->memoryUsageBytes();
+    for (const auto & grafite_filter : grafite_filters)
+        sum += grafite_filter->memoryUsageBytes();
     return sum;
 }
 
-void MergeTreeIndexGranuleSurfFilter::deserializeBinary(ReadBuffer & istr, MergeTreeIndexVersion version)
+void MergeTreeIndexGranuleGrafiteFilter::serializeBinary(WriteBuffer & ostr) const
+{
+    if (empty())
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Attempt to write empty grafite index.");
+
+    for (const auto & filter : grafite_filters)
+    {
+        if (!filter)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Grafite filter is not initialized for index.");
+        // Write the filter size (number of bytes as reported by grafite_->size())
+        // Serialize the filter using the stream operator
+        std::ostringstream oss(std::ios::binary);
+        oss << *(filter->readGrafite());
+        std::string serialized = oss.str();
+        writeBinary(serialized.size(), ostr);
+        ostr.write(serialized.data(), serialized.size());
+    }
+}
+
+void MergeTreeIndexGranuleGrafiteFilter::deserializeBinary(ReadBuffer & istr, MergeTreeIndexVersion version)
 {
     if (version != 1)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Unknown index version {}.", version);
 
-    readVarUInt(total_rows, istr);
-
-    // Deserialize each SurfFilter
-    for (auto & filter : surf_filters)
+    for (auto & filter : grafite_filters)
     {
-        if (!filter)
-        {
-            SurfFilterParameters params = getSurfParameters(1); // Use default false positive probability
-            filter = std::make_shared<SurfFilter>(params);
-        }
-        filter->deserialize(istr);
+        filter->buildFromStream(istr);
     }
 }
 
-void MergeTreeIndexGranuleSurfFilter::serializeBinary(WriteBuffer & ostr) const
-{
-    if (empty())
-        throw Exception(ErrorCodes::LOGICAL_ERROR, "Attempt to write empty surf filter index.");
-
-    writeVarUInt(total_rows, ostr);
-
-    // Serialize each SurfFilter
-    for (const auto & surf_filter : surf_filters)
-    {
-        surf_filter->serialize(ostr);
-    }
-}
-
-void MergeTreeIndexGranuleSurfFilter::fillingSurfFilterWithKeys(
-    SurfFilterPtr & surf_filter, const std::set<std::string> & keys, int variant) const
+void MergeTreeIndexGranuleGrafiteFilter::fillingGrafiteFilterWithKeys(
+    GrafiteFilterPtr & grafite_filter, const std::set<std::string> & keys, double bits_per_key_param) const
 {
     if (keys.empty())
         return;
 
-    // Convert std::set to std::vector for SuRF construction (keys are already sorted)
+    // Convert std::set to std::vector for Grafite construction (keys are already sorted)
     std::vector<std::string> keys_vector(keys.begin(), keys.end());
-
-    // Create SuRF with the sorted keys
-    SurfFilterParameters params = getSurfParameters(variant);
-    *surf_filter = SurfFilter(keys_vector, params);
+    GrafiteFilterParameters params = getGrafiteParameters(bits_per_key_param);
+    *grafite_filter = GrafiteFilter(keys_vector, params);
 }
 
 namespace
@@ -180,47 +157,47 @@ ColumnWithTypeAndName getPreparedSetInfo(const ConstSetPtr & prepared_set)
     return {ColumnTuple::create(set_elements), std::make_shared<DataTypeTuple>(prepared_set->getElementsTypes()), "dummy"};
 }
 
-bool hashMatchesFilter(const SurfFilterPtr & surf_filter, UInt64 hash)
+bool hashMatchesFilter(const GrafiteFilterPtr & grafite_filter, UInt64 hash)
 {
-    // Convert hash to key for SurfFilter lookup
-    // For now, use string representation of hash as temporary bridge
-    std::string key = std::to_string(hash);
-    return surf_filter->lookupKey(key);
+    // Cannot convert hash to key for GrafiteFilter lookup, assume it matches
+    (void)hash; // Avoid unused variable warning
+    (void)grafite_filter; // Avoid unused variable warning
+    return true;
 }
 
-bool keyMatchesFilter(const SurfFilterPtr & surf_filter, const std::string & key)
+bool keyMatchesFilter(const GrafiteFilterPtr & grafite_filter, const std::string & key)
 {
-    // Direct key lookup in SuRF filter
-    return surf_filter->lookupKey(key);
+    // Direct key lookup in Grafite filter
+    return grafite_filter->lookupKey(key);
 }
 
 bool keyMatchesRangeFilter(
-    const SurfFilterPtr & surf_filter, const std::string & key, MergeTreeIndexConditionSurfFilter::RPNElement::Function function)
+    const GrafiteFilterPtr & grafite_filter, const std::string & key, MergeTreeIndexConditionGrafiteFilter::RPNElement::Function function)
 {
     // Use concrete bounds instead of empty strings for better compatibility
     // For numeric data, use reasonable min/max bounds that cover typical ranges
-    const std::string MIN_BOUND = ""; // Int32 min
-    const std::string MAX_BOUND = "\uffff"; // UInt32 max as upper bound
+    const std::string MIN_BOUND = "0"; // Int32 min
+    const std::string MAX_BOUND = "4294967295"; // UInt32 max as upper bound
 
     bool result = false;
-    // For range operations, we use SuRF's range query capabilities
+    // For range operations, we use Grafite's range query capabilities
     switch (function)
     {
-        case MergeTreeIndexConditionSurfFilter::RPNElement::FUNCTION_GREATER:
+        case MergeTreeIndexConditionGrafiteFilter::RPNElement::FUNCTION_GREATER:
             // x > key: Look for anything in range (key, MAX_BOUND]
-            result = surf_filter->lookupRange(key, false, MAX_BOUND, true);
+            result = grafite_filter->lookupRange(key, false, MAX_BOUND, true);
             break;
-        case MergeTreeIndexConditionSurfFilter::RPNElement::FUNCTION_GREATER_OR_EQUALS:
+        case MergeTreeIndexConditionGrafiteFilter::RPNElement::FUNCTION_GREATER_OR_EQUALS:
             // x >= key: Look for anything in range [key, MAX_BOUND]
-            result = surf_filter->lookupRange(key, true, MAX_BOUND, true);
+            result = grafite_filter->lookupRange(key, true, MAX_BOUND, true);
             break;
-        case MergeTreeIndexConditionSurfFilter::RPNElement::FUNCTION_LESS:
+        case MergeTreeIndexConditionGrafiteFilter::RPNElement::FUNCTION_LESS:
             // x < key: Look for anything in range [MIN_BOUND, key)
-            result = surf_filter->lookupRange(MIN_BOUND, true, key, false);
+            result = grafite_filter->lookupRange(MIN_BOUND, true, key, false);
             break;
-        case MergeTreeIndexConditionSurfFilter::RPNElement::FUNCTION_LESS_OR_EQUALS:
+        case MergeTreeIndexConditionGrafiteFilter::RPNElement::FUNCTION_LESS_OR_EQUALS:
             // x <= key: Look for anything in range [MIN_BOUND, key]
-            result = surf_filter->lookupRange(MIN_BOUND, true, key, true);
+            result = grafite_filter->lookupRange(MIN_BOUND, true, key, true);
             break;
         default:
             result = false;
@@ -230,7 +207,7 @@ bool keyMatchesRangeFilter(
 }
 
 bool keyMatchesInRangeFilter(
-    const SurfFilterPtr & surf_filter, const std::vector<std::pair<size_t, ColumnPtr>> & predicate, size_t current_index)
+    const GrafiteFilterPtr & grafite_filter, const std::vector<std::pair<size_t, ColumnPtr>> & predicate, size_t current_index)
 {
     // INRANGE requires exactly 2 values: left and right bounds
     if (predicate.size() < 2 || current_index + 1 >= predicate.size())
@@ -260,13 +237,13 @@ bool keyMatchesInRangeFilter(
             right_bound = inner_right->getDataAt(0).toString();
     }
 
-    // Use SuRF's range query with the closed range [left_bound, right_bound]
-    bool result = surf_filter->lookupRange(left_bound, true, right_bound, true);
+    // Use Grafite's range query with the closed range [left_bound, right_bound]
+    bool result = grafite_filter->lookupRange(left_bound, true, right_bound, true);
 
     return result;
 }
 
-// bool maybeTrueOnSurfFilterWithKeys(const IColumn * column, const SurfFilterPtr & surf_filter, const DataTypePtr & data_type, bool match_all)
+// bool maybeTrueOnGrafiteFilterWithKeys(const IColumn * column, const GrafiteFilterPtr & grafite_filter, const DataTypePtr & data_type, bool match_all)
 // {
 //     const auto * const_column = typeid_cast<const ColumnConst *>(column);
 
@@ -274,24 +251,24 @@ bool keyMatchesInRangeFilter(
 //     {
 //         // Single constant value
 //         Field field = const_column->getField();
-//         std::string key = extractKeyFromFieldSurf(field, data_type);
-//         return keyMatchesFilter(surf_filter, key);
+//         std::string key = extractKeyFromFieldGrafite(field, data_type);
+//         return keyMatchesFilter(grafite_filter, key);
 //     }
 
 //     // Multiple values - extract keys from the column
 //     // Create a temporary ColumnPtr by cloning the column since we need a proper ColumnPtr
 //     ColumnPtr column_ptr = column->cloneResized(column->size());
-//     auto keys = extractKeysFromColumnSurf(column_ptr, data_type, 0, column->size());
+//     auto keys = extractKeysFromColumnGrafite(column_ptr, data_type, 0, column->size());
 
 //     if (match_all)
 //     {
-//         return std::all_of(keys.begin(), keys.end(), [&](const std::string & key) { return keyMatchesFilter(surf_filter, key); });
+//         return std::all_of(keys.begin(), keys.end(), [&](const std::string & key) { return keyMatchesFilter(grafite_filter, key); });
 //     }
 
-//     return std::any_of(keys.begin(), keys.end(), [&](const std::string & key) { return keyMatchesFilter(surf_filter, key); });
+//     return std::any_of(keys.begin(), keys.end(), [&](const std::string & key) { return keyMatchesFilter(grafite_filter, key); });
 // }
 
-bool maybeTrueOnSurfFilter(const IColumn * hash_column, const SurfFilterPtr & surf_filter, bool match_all)
+bool maybeTrueOnGrafiteFilter(const IColumn * hash_column, const GrafiteFilterPtr & grafite_filter, bool match_all)
 {
     const auto * const_column = typeid_cast<const ColumnConst *>(hash_column);
     const auto * non_const_column = typeid_cast<const ColumnUInt64 *>(hash_column);
@@ -301,31 +278,29 @@ bool maybeTrueOnSurfFilter(const IColumn * hash_column, const SurfFilterPtr & su
 
     if (const_column)
     {
-        return hashMatchesFilter(surf_filter, const_column->getValue<UInt64>());
+        return hashMatchesFilter(grafite_filter, const_column->getValue<UInt64>());
     }
 
     const ColumnUInt64::Container & hashes = non_const_column->getData();
 
     if (match_all)
     {
-        return std::all_of(hashes.begin(), hashes.end(), [&](const auto & hash_row) { return hashMatchesFilter(surf_filter, hash_row); });
+        return std::all_of(
+            hashes.begin(), hashes.end(), [&](const auto & hash_row) { return hashMatchesFilter(grafite_filter, hash_row); });
     }
 
-    return std::any_of(hashes.begin(), hashes.end(), [&](const auto & hash_row) { return hashMatchesFilter(surf_filter, hash_row); });
+    return std::any_of(hashes.begin(), hashes.end(), [&](const auto & hash_row) { return hashMatchesFilter(grafite_filter, hash_row); });
 }
 
 }
 
-// Simple key extraction functions for SuRF
-std::string extractKeyFromFieldSurf(const Field & field, const DataTypePtr & data_type)
+// Simple key extraction functions for Grafite
+std::string extractKeyFromFieldGrafite(const Field & field, const DataTypePtr & data_type)
 {
     WhichDataType which(data_type);
 
     if (field.isNull())
         return "0"; // Simple null representation
-
-    if (which.isString() || which.isFixedString())
-        return field.safeGet<String>();
 
     // Simple string format for all numeric types
     if (which.isUInt8() || which.isUInt16() || which.isUInt32() || which.isUInt64() || which.isUInt128() || which.isUInt256())
@@ -340,20 +315,12 @@ std::string extractKeyFromFieldSurf(const Field & field, const DataTypePtr & dat
     {
         return toString(field.safeGet<UInt64>());
     }
-    if (which.isFloat32() || which.isFloat64())
-    {
-        return toString(field.safeGet<Float64>());
-    }
-    if (which.isUUID() || which.isIPv4() || which.isIPv6())
-    {
-        return field.dump();
-    }
 
     // For other types, convert to string representation
     return field.dump();
 }
 
-std::vector<std::string> extractKeysFromColumnSurf(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit)
+std::vector<std::string> extractKeysFromColumnGrafite(const ColumnPtr & column, const DataTypePtr & data_type, size_t pos, size_t limit)
 {
     std::vector<std::string> keys;
     keys.reserve(limit);
@@ -408,13 +375,13 @@ std::vector<std::string> extractKeysFromColumnSurf(const ColumnPtr & column, con
     {
         Field field;
         column->get(i, field);
-        keys.push_back(extractKeyFromFieldSurf(field, data_type));
+        keys.push_back(extractKeyFromFieldGrafite(field, data_type));
     }
 
     return keys;
 }
 
-MergeTreeIndexConditionSurfFilter::MergeTreeIndexConditionSurfFilter(
+MergeTreeIndexConditionGrafiteFilter::MergeTreeIndexConditionGrafiteFilter(
     const ActionsDAG::Node * predicate, ContextPtr context_, const Block & header_)
     : WithContext(context_)
     , header(header_)
@@ -430,7 +397,7 @@ MergeTreeIndexConditionSurfFilter::MergeTreeIndexConditionSurfFilter(
     rpn = std::move(builder).extractRPN();
 }
 
-bool MergeTreeIndexConditionSurfFilter::alwaysUnknownOrTrue() const
+bool MergeTreeIndexConditionGrafiteFilter::alwaysUnknownOrTrue() const
 {
     return rpnEvaluatesAlwaysUnknownOrTrue(
         rpn,
@@ -447,7 +414,7 @@ bool MergeTreeIndexConditionSurfFilter::alwaysUnknownOrTrue() const
          RPNElement::FUNCTION_LESS_OR_EQUALS});
 }
 
-bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexGranuleSurfFilter * granule) const
+bool MergeTreeIndexConditionGrafiteFilter::mayBeTrueOnGranule(const MergeTreeIndexGranuleGrafiteFilter * granule) const
 {
     std::vector<BoolMask> rpn_stack;
     const auto & filters = granule->getFilters();
@@ -476,7 +443,7 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
             const auto & predicate = element.predicate;
 
             // Special handling for INRANGE: FUNCTION_IN with exactly 2 predicate values
-            if (element.function == RPNElement::FUNCTION_IN && predicate.size() == 2)
+            if (element.function == RPNElement::FUNCTION_IN)
             {
                 const auto & filter = filters[predicate[0].first];
                 match_rows = keyMatchesInRangeFilter(filter, predicate, 0);
@@ -515,12 +482,12 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
                         }
                         else
                         {
-                            current_match = maybeTrueOnSurfFilter(&*key_column, filter, match_all);
+                            current_match = maybeTrueOnGrafiteFilter(&*key_column, filter, match_all);
                         }
                     }
                     else
                     {
-                        current_match = maybeTrueOnSurfFilter(&*key_column, filter, match_all);
+                        current_match = maybeTrueOnGrafiteFilter(&*key_column, filter, match_all);
                     }
 
                     // Update match_rows based on operation type
@@ -581,7 +548,7 @@ bool MergeTreeIndexConditionSurfFilter::mayBeTrueOnGranule(const MergeTreeIndexG
     return rpn_stack[0].can_be_true;
 }
 
-bool MergeTreeIndexConditionSurfFilter::extractAtomFromTree(const RPNBuilderTreeNode & node, RPNElement & out)
+bool MergeTreeIndexConditionGrafiteFilter::extractAtomFromTree(const RPNBuilderTreeNode & node, RPNElement & out)
 {
     {
         Field const_value;
@@ -612,7 +579,7 @@ bool MergeTreeIndexConditionSurfFilter::extractAtomFromTree(const RPNBuilderTree
     return traverseFunction(node, out, nullptr /*parent*/);
 }
 
-bool MergeTreeIndexConditionSurfFilter::traverseFunction(
+bool MergeTreeIndexConditionGrafiteFilter::traverseFunction(
     const RPNBuilderTreeNode & node, RPNElement & out, const RPNBuilderTreeNode * parent)
 {
     if (!node.isFunction())
@@ -633,9 +600,6 @@ bool MergeTreeIndexConditionSurfFilter::traverseFunction(
         }
     }
 
-    if (arguments_size != 2)
-        return false;
-
     /// indexOf() should be inside comparison function, e.g. greater(indexOf(key, 42), 0).
     /// Other conditions should be at top level, e.g. equals(key, 42), not equals(equals(key, 42), 1).
     if ((function_name == "indexOf") != (parent != nullptr))
@@ -643,6 +607,9 @@ bool MergeTreeIndexConditionSurfFilter::traverseFunction(
 
     auto lhs_argument = function.getArgumentAt(0);
     auto rhs_argument = function.getArgumentAt(1);
+
+    if (arguments_size != 2)
+        return false;
 
     if (functionIsInOrGlobalInOperator(function_name))
     {
@@ -686,7 +653,7 @@ bool MergeTreeIndexConditionSurfFilter::traverseFunction(
     return false;
 }
 
-bool MergeTreeIndexConditionSurfFilter::traverseTreeIn(
+bool MergeTreeIndexConditionGrafiteFilter::traverseTreeIn(
     const String & function_name,
     const RPNBuilderTreeNode & key_node,
     const ConstSetPtr & prepared_set,
@@ -711,14 +678,15 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeIn(
             {
                 Field field;
                 converted_column->get(i, field);
-                auto key_column = SurfFilterHash::keyWithField(index_type.get(), field);
+                auto key_column = GrafiteFilterHash::keyWithField(index_type.get(), field);
                 out.predicate.emplace_back(std::make_pair(position, key_column));
             }
         }
         else
         {
             // For non-IN operations, use the original hash-based approach
-            out.predicate.emplace_back(std::make_pair(position, SurfFilterHash::hashWithColumn(index_type, converted_column, 0, row_size)));
+            out.predicate.emplace_back(
+                std::make_pair(position, GrafiteFilterHash::hashWithColumn(index_type, converted_column, 0, row_size)));
         }
 
         if (function_name == "in" || function_name == "globalIn")
@@ -788,7 +756,7 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeIn(
 
             if (header.has(map_keys_index_column_name))
             {
-                /// For mapKeys we serialize key argument with surf filter
+                /// For mapKeys we serialize key argument with grafite filter
 
                 auto second_argument = key_node_function.getArgumentAt(1);
 
@@ -799,8 +767,9 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeIn(
                 {
                     size_t position = header.getPositionByName(map_keys_index_column_name);
                     const DataTypePtr & index_type = header.getByPosition(position).type;
-                    const DataTypePtr actual_type = SurfFilter::getPrimitiveType(index_type);
-                    out.predicate.emplace_back(std::make_pair(position, SurfFilterHash::keyWithField(actual_type.get(), constant_value)));
+                    const DataTypePtr actual_type = GrafiteFilter::getPrimitiveType(index_type);
+                    out.predicate.emplace_back(
+                        std::make_pair(position, GrafiteFilterHash::keyWithField(actual_type.get(), constant_value)));
                 }
                 else
                 {
@@ -809,7 +778,7 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeIn(
             }
             else if (header.has(map_values_index_column_name))
             {
-                /// For mapValues we serialize set with surf filter
+                /// For mapValues we serialize set with grafite filter
 
                 size_t row_size = column->size();
                 size_t position = header.getPositionByName(map_values_index_column_name);
@@ -825,14 +794,14 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeIn(
                     {
                         Field field;
                         converted_column->get(i, field);
-                        auto key_column = SurfFilterHash::keyWithField(array_nested_type.get(), field);
+                        auto key_column = GrafiteFilterHash::keyWithField(array_nested_type.get(), field);
                         out.predicate.emplace_back(std::make_pair(position, key_column));
                     }
                 }
                 else
                 {
                     out.predicate.emplace_back(
-                        std::make_pair(position, SurfFilterHash::hashWithColumn(array_nested_type, converted_column, 0, row_size)));
+                        std::make_pair(position, GrafiteFilterHash::hashWithColumn(array_nested_type, converted_column, 0, row_size)));
                 }
             }
             else
@@ -854,7 +823,7 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeIn(
 }
 
 
-static bool indexOfCanUseSurfFilter(const RPNBuilderTreeNode * parent)
+static bool indexOfCanUseGrafiteFilter(const RPNBuilderTreeNode * parent)
 {
     if (!parent)
         return true;
@@ -931,7 +900,7 @@ static bool indexOfCanUseSurfFilter(const RPNBuilderTreeNode * parent)
 }
 
 
-bool MergeTreeIndexConditionSurfFilter::traverseTreeEquals(
+bool MergeTreeIndexConditionGrafiteFilter::traverseTreeEquals(
     const String & function_name,
     const RPNBuilderTreeNode & key_node,
     const DataTypePtr & value_type,
@@ -955,15 +924,15 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeEquals(
             /// We can treat `indexOf` function similar to `has`.
             /// But it is little more cumbersome, compare: `has(arr, elem)` and `indexOf(arr, elem) != 0`.
             /// The `parent` in this context is expected to be function `!=` (`notEquals`).
-            if (function_name == "has" || indexOfCanUseSurfFilter(parent))
+            if (function_name == "has" || indexOfCanUseGrafiteFilter(parent))
             {
                 out.function = RPNElement::FUNCTION_HAS;
-                const DataTypePtr actual_type = SurfFilter::getPrimitiveType(array_type->getNestedType());
+                const DataTypePtr actual_type = GrafiteFilter::getPrimitiveType(array_type->getNestedType());
                 auto converted_field = convertFieldToType(value_field, *actual_type, value_type.get());
                 if (converted_field.isNull())
                     return false;
 
-                out.predicate.emplace_back(std::make_pair(position, SurfFilterHash::keyWithField(actual_type.get(), converted_field)));
+                out.predicate.emplace_back(std::make_pair(position, GrafiteFilterHash::keyWithField(actual_type.get(), converted_field)));
             }
         }
         else if (function_name == "hasAny" || function_name == "hasAll")
@@ -974,7 +943,7 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeEquals(
             if (value_field.getType() != Field::Types::Array)
                 return false;
 
-            const DataTypePtr actual_type = SurfFilter::getPrimitiveType(array_type->getNestedType());
+            const DataTypePtr actual_type = GrafiteFilter::getPrimitiveType(array_type->getNestedType());
             ColumnPtr column;
             {
                 const bool is_nullable = actual_type->isNullable();
@@ -996,7 +965,7 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeEquals(
             }
 
             out.function = function_name == "hasAny" ? RPNElement::FUNCTION_HAS_ANY : RPNElement::FUNCTION_HAS_ALL;
-            out.predicate.emplace_back(std::make_pair(position, SurfFilterHash::hashWithColumn(actual_type, column, 0, column->size())));
+            out.predicate.emplace_back(std::make_pair(position, GrafiteFilterHash::hashWithColumn(actual_type, column, 0, column->size())));
         }
         else
         {
@@ -1019,12 +988,12 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeEquals(
             else
                 return false;
 
-            const DataTypePtr actual_type = SurfFilter::getPrimitiveType(index_type);
+            const DataTypePtr actual_type = GrafiteFilter::getPrimitiveType(index_type);
             auto converted_field = convertFieldToType(value_field, *actual_type, value_type.get());
             if (converted_field.isNull())
                 return false;
 
-            out.predicate.emplace_back(std::make_pair(position, SurfFilterHash::keyWithField(actual_type.get(), converted_field)));
+            out.predicate.emplace_back(std::make_pair(position, GrafiteFilterHash::keyWithField(actual_type.get(), converted_field)));
         }
 
         return true;
@@ -1049,12 +1018,12 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeEquals(
             return false;
 
         out.function = RPNElement::FUNCTION_HAS;
-        const DataTypePtr actual_type = SurfFilter::getPrimitiveType(array_type->getNestedType());
+        const DataTypePtr actual_type = GrafiteFilter::getPrimitiveType(array_type->getNestedType());
         auto converted_field = convertFieldToType(value_field, *actual_type, value_type.get());
         if (converted_field.isNull())
             return false;
 
-        out.predicate.emplace_back(std::make_pair(position, SurfFilterHash::keyWithField(actual_type.get(), converted_field)));
+        out.predicate.emplace_back(std::make_pair(position, GrafiteFilterHash::keyWithField(actual_type.get(), converted_field)));
         return true;
     }
 
@@ -1126,8 +1095,8 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeEquals(
             out.function = function_name == "equals" ? RPNElement::FUNCTION_EQUALS : RPNElement::FUNCTION_NOT_EQUALS;
 
             const auto & index_type = header.getByPosition(position).type;
-            const auto actual_type = SurfFilter::getPrimitiveType(index_type);
-            out.predicate.emplace_back(std::make_pair(position, SurfFilterHash::keyWithField(actual_type.get(), const_value)));
+            const auto actual_type = GrafiteFilter::getPrimitiveType(index_type);
+            out.predicate.emplace_back(std::make_pair(position, GrafiteFilterHash::keyWithField(actual_type.get(), const_value)));
 
             return true;
         }
@@ -1136,53 +1105,49 @@ bool MergeTreeIndexConditionSurfFilter::traverseTreeEquals(
     return false;
 }
 
-MergeTreeIndexAggregatorSurfFilter::MergeTreeIndexAggregatorSurfFilter(const Names & columns_name_, int variant_)
+MergeTreeIndexAggregatorGrafiteFilter::MergeTreeIndexAggregatorGrafiteFilter(const Names & columns_name_, double bits_per_key_)
     : index_columns_name(columns_name_)
-    , surf_filters(columns_name_.size())
+    , grafite_filters(columns_name_.size())
     , accumulated_keys(columns_name_.size())
-    , variant(variant_)
+    , bits_per_key(bits_per_key_)
 {
-    // We don't need to initialize SuRF filters here since we'll create them
+    // We don't need to initialize Grafite filters here since we'll create them
     // directly from accumulated keys in getGranuleAndReset()
 }
 
-bool MergeTreeIndexAggregatorSurfFilter::empty() const
+bool MergeTreeIndexAggregatorGrafiteFilter::empty() const
 {
     return !total_rows;
 }
 
-MergeTreeIndexGranulePtr MergeTreeIndexAggregatorSurfFilter::getGranuleAndReset()
+MergeTreeIndexGranulePtr MergeTreeIndexAggregatorGrafiteFilter::getGranuleAndReset()
 {
-    // Create new SuRF filters for the granule (separate from aggregator's working filters)
-    std::vector<SurfFilterPtr> granule_filters(surf_filters.size());
-
+    // Create new Grafite filters for the granule (separate from aggregator's working filters)
+    std::vector<GrafiteFilterPtr> granule_filters(grafite_filters.size());
     // Sort accumulated keys and create finalized filters for the granule
-    for (size_t i = 0; i < surf_filters.size(); ++i)
+    for (size_t i = 0; i < grafite_filters.size(); ++i)
     {
         if (accumulated_keys[i].empty())
         {
             // Create empty filter for this column
-            SurfFilterParameters params = getSurfParameters(variant);
-            granule_filters[i] = std::make_shared<SurfFilter>(params);
+            GrafiteFilterParameters params = getGrafiteParameters(bits_per_key);
+            granule_filters[i] = std::make_shared<GrafiteFilter>(params);
             continue;
         }
 
-        // Sort all accumulated keys for this column
-        std::sort(accumulated_keys[i].begin(), accumulated_keys[i].end());
-
-        // Create a new SuRF filter for the granule and build it with sorted keys
-        SurfFilterParameters params = getSurfParameters(variant);
-        granule_filters[i] = std::make_shared<SurfFilter>(accumulated_keys[i], params);
+        // Create a new Grafite filter for the granule and build it with sorted keys
+        GrafiteFilterParameters params = getGrafiteParameters(bits_per_key);
+        granule_filters[i] = std::make_shared<GrafiteFilter>(accumulated_keys[i], params);
     }
 
     // Create granule with the finalized filters
-    auto granule = std::make_shared<MergeTreeIndexGranuleSurfFilter>(index_columns_name.size());
+    auto granule = std::make_shared<MergeTreeIndexGranuleGrafiteFilter>(index_columns_name.size());
     granule->setFilters(granule_filters);
     granule->setTotalRows(total_rows);
 
     // Reset aggregator state for next granule
     total_rows = 0;
-    for (size_t i = 0; i < surf_filters.size(); ++i)
+    for (size_t i = 0; i < grafite_filters.size(); ++i)
     {
         accumulated_keys[i].clear();
     }
@@ -1190,7 +1155,7 @@ MergeTreeIndexGranulePtr MergeTreeIndexAggregatorSurfFilter::getGranuleAndReset(
     return granule;
 }
 
-void MergeTreeIndexAggregatorSurfFilter::update(const Block & block, size_t * pos, size_t limit)
+void MergeTreeIndexAggregatorGrafiteFilter::update(const Block & block, size_t * pos, size_t limit)
 {
     if (*pos >= block.rows())
         throw Exception(
@@ -1209,7 +1174,7 @@ void MergeTreeIndexAggregatorSurfFilter::update(const Block & block, size_t * po
         // Extract actual keys and accumulate them for later sorted insertion
         try
         {
-            auto keys = extractKeysFromColumnSurf(column_and_type.column, column_and_type.type, *pos, max_read_rows);
+            auto keys = extractKeysFromColumnGrafite(column_and_type.column, column_and_type.type, *pos, max_read_rows);
 
             // Accumulate keys for later sorting and insertion
             for (const auto & key : keys)
@@ -1220,7 +1185,7 @@ void MergeTreeIndexAggregatorSurfFilter::update(const Block & block, size_t * po
         catch (...)
         {
             // Fallback: convert hashes to string keys
-            auto index_column = SurfFilterHash::hashWithColumn(column_and_type.type, column_and_type.column, *pos, max_read_rows);
+            auto index_column = GrafiteFilterHash::hashWithColumn(column_and_type.type, column_and_type.column, *pos, max_read_rows);
             const auto & index_col = checkAndGetColumn<ColumnUInt64>(*index_column);
             const auto & index_data = index_col.getData();
 
@@ -1237,25 +1202,25 @@ void MergeTreeIndexAggregatorSurfFilter::update(const Block & block, size_t * po
     total_rows += max_read_rows;
 }
 
-MergeTreeIndexSurfFilter::MergeTreeIndexSurfFilter(const IndexDescription & index_, int variant_)
+MergeTreeIndexGrafiteFilter::MergeTreeIndexGrafiteFilter(const IndexDescription & index_, double bits_per_key_)
     : IMergeTreeIndex(index_)
-    , variant(variant_)
+    , bits_per_key(bits_per_key_)
 {
 }
 
-MergeTreeIndexGranulePtr MergeTreeIndexSurfFilter::createIndexGranule() const
+MergeTreeIndexGranulePtr MergeTreeIndexGrafiteFilter::createIndexGranule() const
 {
-    return std::make_shared<MergeTreeIndexGranuleSurfFilter>(index.column_names.size(), variant);
+    return std::make_shared<MergeTreeIndexGranuleGrafiteFilter>(index.column_names.size(), bits_per_key);
 }
 
-MergeTreeIndexAggregatorPtr MergeTreeIndexSurfFilter::createIndexAggregator(const MergeTreeWriterSettings & /*settings*/) const
+MergeTreeIndexAggregatorPtr MergeTreeIndexGrafiteFilter::createIndexAggregator(const MergeTreeWriterSettings & /*settings*/) const
 {
-    return std::make_shared<MergeTreeIndexAggregatorSurfFilter>(index.column_names, variant);
+    return std::make_shared<MergeTreeIndexAggregatorGrafiteFilter>(index.column_names, bits_per_key);
 }
 
-MergeTreeIndexConditionPtr MergeTreeIndexSurfFilter::createIndexCondition(const ActionsDAG::Node * predicate, ContextPtr context) const
+MergeTreeIndexConditionPtr MergeTreeIndexGrafiteFilter::createIndexCondition(const ActionsDAG::Node * predicate, ContextPtr context) const
 {
-    return std::make_shared<MergeTreeIndexConditionSurfFilter>(predicate, context, index.sample_block);
+    return std::make_shared<MergeTreeIndexConditionGrafiteFilter>(predicate, context, index.sample_block);
 }
 
 static void assertIndexColumnsType(const Block & header)
@@ -1267,36 +1232,36 @@ static void assertIndexColumnsType(const Block & header)
 
     for (const auto & type : columns_data_types)
     {
-        const IDataType * actual_type = SurfFilter::getPrimitiveType(type).get();
+        const IDataType * actual_type = GrafiteFilter::getPrimitiveType(type).get();
         WhichDataType which(actual_type);
 
         if (!which.isUInt() && !which.isInt() && !which.isString() && !which.isFixedString() && !which.isFloat() && !which.isDate()
             && !which.isDateTime() && !which.isDateTime64() && !which.isEnum() && !which.isUUID() && !which.isIPv4() && !which.isIPv6())
-            throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Unexpected type {} of surf filter index.", type->getName());
+            throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Unexpected type {} of grafite filter index.", type->getName());
     }
 }
 
-MergeTreeIndexPtr surfFilterIndexCreator(const IndexDescription & index)
+MergeTreeIndexPtr grafiteFilterIndexCreator(const IndexDescription & index)
 {
-    int variant = 0; // Default variant
+    double bits_per_key = 2.0; // Default bits per key
 
     if (!index.arguments.empty())
     {
         const auto & argument = index.arguments[0];
-        variant = std::min<int>(3, std::max<int>(argument.safeGet<int>(), 0)); // Allow 0-3 range
+        bits_per_key = std::max<double>(argument.safeGet<double>(), 0.1); // Allow (0, Inf] range
     }
 
-    return std::make_shared<MergeTreeIndexSurfFilter>(index, variant);
+    return std::make_shared<MergeTreeIndexGrafiteFilter>(index, bits_per_key);
 }
 
-void surfFilterIndexValidator(const IndexDescription & index, bool attach)
+void grafiteFilterIndexValidator(const IndexDescription & index, bool attach)
 {
     assertIndexColumnsType(index.sample_block);
 
     if (index.arguments.size() > 1)
     {
         if (!attach) /// This is for backward compatibility.
-            throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "SurfFilter index cannot have more than one parameter.");
+            throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "GrafiteFilter index cannot have more than one parameter.");
     }
 
     if (!index.arguments.empty())
@@ -1305,11 +1270,10 @@ void surfFilterIndexValidator(const IndexDescription & index, bool attach)
 
         if (!attach)
         {
-            int variant_value = argument.safeGet<int>();
-            if (variant_value < 0 || variant_value > 3)
-                throw Exception(ErrorCodes::BAD_ARGUMENTS, "The SurfFilter variant must be an integer between 0 and 3.");
+            double bits_per_key_value = argument.safeGet<double>();
+            if (bits_per_key_value < 0)
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "The GrafiteFilter bits_per_key must be a positive decimal");
         }
     }
 }
-
 }
